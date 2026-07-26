@@ -3,6 +3,7 @@ server.py — Integration layer: stdlib REST API wiring auth.py + db.py together
 plus static file serving for the frontend. Zero third-party dependencies
 (http.server + json only).
 """
+
 from __future__ import annotations
 
 import json
@@ -11,6 +12,7 @@ import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -58,7 +60,7 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization", "")
         if not header.startswith("Bearer "):
             return None
-        token = header[len("Bearer "):]
+        token = header[len("Bearer ") :]
         try:
             payload = auth.decode_token(token)
         except auth.AuthError:
@@ -119,7 +121,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(404, {"error": "not found"})
 
         # Static frontend serving
-        rel_path = self.path.lstrip("/") or "index.html"
+        path = urlparse(self.path).path
+        rel_path = path.lstrip("/") or "index.html"
         if self._send_static(rel_path):
             return
         if self._send_static("index.html"):

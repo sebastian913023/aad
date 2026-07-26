@@ -1,0 +1,20 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately import after a sys.path insert, and assert on broad
+# exception types when checking that invalid input is rejected.
+"tests/*" = ["E402", "B017"]
+"backend/*" = ["E402"]

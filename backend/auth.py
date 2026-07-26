@@ -5,6 +5,7 @@ Implements a minimal, correct HMAC-SHA256 signed token scheme structurally
 compatible with JWT (header.payload.signature, base64url, no padding), plus
 PBKDF2-HMAC password hashing. No third-party dependencies.
 """
+
 from __future__ import annotations
 
 import base64
@@ -94,4 +95,5 @@ def verify_password(password: str, stored: str) -> bool:
 
 def os_urandom(n: int) -> bytes:
     import os as _os
+
     return _os.urandom(n)

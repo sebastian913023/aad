@@ -5,13 +5,15 @@ All functions accept an optional db_path override that is resolved at CALL
 TIME against the module-level DB_PATH (not bound at def-time), so tests can
 safely repoint db.DB_PATH to an isolated temp database.
 """
+
 from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "task_tracker.db"
 
@@ -34,11 +36,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 """
 
 
-def _resolve(db_path: Optional[Path]) -> Path:
+def _resolve(db_path: Path | None) -> Path:
     return db_path if db_path is not None else DB_PATH
 
 
-def init_db(db_path: Optional[Path] = None) -> None:
+def init_db(db_path: Path | None = None) -> None:
     path = _resolve(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as conn:
@@ -46,7 +48,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
 
 
 @contextmanager
-def connect(db_path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
+def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     path = _resolve(db_path)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -57,7 +59,7 @@ def connect(db_path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def create_user(username: str, password_hash: str, db_path: Optional[Path] = None) -> int:
+def create_user(username: str, password_hash: str, db_path: Path | None = None) -> int:
     with connect(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
@@ -66,23 +68,24 @@ def create_user(username: str, password_hash: str, db_path: Optional[Path] = Non
         return cur.lastrowid
 
 
-def get_user_by_username(username: str, db_path: Optional[Path] = None) -> Optional[dict[str, Any]]:
+def get_user_by_username(username: str, db_path: Path | None = None) -> dict[str, Any] | None:
     with connect(db_path) as conn:
         row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         return dict(row) if row else None
 
 
-def create_task(user_id: int, title: str, db_path: Optional[Path] = None) -> int:
+def create_task(user_id: int, title: str, db_path: Path | None = None) -> int:
     now = time.time()
     with connect(db_path) as conn:
         cur = conn.execute(
-            "INSERT INTO tasks (user_id, title, done, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
+            "INSERT INTO tasks (user_id, title, done, created_at, updated_at)"
+            " VALUES (?, ?, 0, ?, ?)",
             (user_id, title, now, now),
         )
         return cur.lastrowid
 
 
-def list_tasks(user_id: int, db_path: Optional[Path] = None) -> list[dict[str, Any]]:
+def list_tasks(user_id: int, db_path: Path | None = None) -> list[dict[str, Any]]:
     with connect(db_path) as conn:
         rows = conn.execute(
             "SELECT * FROM tasks WHERE user_id = ? ORDER BY created_at DESC", (user_id,)
@@ -94,9 +97,9 @@ def update_task(
     task_id: int,
     user_id: int,
     *,
-    title: Optional[str] = None,
-    done: Optional[bool] = None,
-    db_path: Optional[Path] = None,
+    title: str | None = None,
+    done: bool | None = None,
+    db_path: Path | None = None,
 ) -> bool:
     fields: list[str] = []
     values: list[Any] = []
@@ -118,7 +121,7 @@ def update_task(
         return cur.rowcount > 0
 
 
-def delete_task(task_id: int, user_id: int, db_path: Optional[Path] = None) -> bool:
+def delete_task(task_id: int, user_id: int, db_path: Path | None = None) -> bool:
     with connect(db_path) as conn:
         cur = conn.execute("DELETE FROM tasks WHERE id = ? AND user_id = ?", (task_id, user_id))
         return cur.rowcount > 0

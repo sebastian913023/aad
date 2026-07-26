@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run test suite
+        # The application is stdlib-only, so the tests need no install step.
+        run: python -m unittest discover -s tests -t . -v
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff==0.15.8
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Check formatting is not wildly off
+        run: ruff format --diff .
+
+  smoke:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Boot the server and exercise the API
+        run: |
+          set -euo pipefail
+          python backend/server.py &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:8765/healthz | grep -q '"ok"'
+          curl -fsS -X POST http://127.0.0.1:8765/api/register \
+            -d '{"username":"ci","password":"pw"}' | grep -q created
+          TOKEN=$(curl -fsS -X POST http://127.0.0.1:8765/api/login \
+            -d '{"username":"ci","password":"pw"}' \
+            | python -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+          curl -fsS -X POST http://127.0.0.1:8765/api/tasks \
+            -H "Authorization: Bearer $TOKEN" -d '{"title":"ci task"}' | grep -q '"id"'
+          curl -fsS http://127.0.0.1:8765/api/tasks \
+            -H "Authorization: Bearer $TOKEN" | grep -q 'ci task'
+          curl -fsS http://127.0.0.1:8765/ | grep -qi '<html'
+          echo "smoke test passed"
