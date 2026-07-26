@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tasks</title>
+<style>
+  :root {
+    --bg: #f6f7fb;
+    --surface: #ffffff;
+    --border: #e5e7eb;
+    --text: #1a1d29;
+    --text-muted: #6b7280;
+    --accent: #4f46e5;
+    --accent-hover: #4338ca;
+    --danger: #dc2626;
+    --success: #16a34a;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --surface: #171a21;
+      --border: #2a2e38;
+      --text: #e8e9ed;
+      --text-muted: #9aa0ac;
+      --accent: #6366f1;
+      --accent-hover: #7c7ff0;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.3);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  header {
+    width: 100%;
+    max-width: 640px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 28px 20px 8px;
+  }
+  header h1 { font-size: 20px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  header .user-badge { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text-muted); }
+  header button.link {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: 13px; text-decoration: underline; padding: 0;
+  }
+  main { width: 100%; max-width: 640px; padding: 12px 20px 60px; flex: 1; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 28px;
+  }
+
+  /* Auth screen */
+  #auth-view { display: flex; justify-content: center; padding-top: 8vh; }
+  #auth-view .card { width: 100%; max-width: 380px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 22px; background: var(--bg); border-radius: 8px; padding: 4px; }
+  .tabs button {
+    flex: 1; padding: 8px 0; border: none; background: transparent; border-radius: 6px;
+    font-size: 14px; font-weight: 600; color: var(--text-muted); cursor: pointer; transition: all .15s;
+  }
+  .tabs button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  form { display: flex; flex-direction: column; gap: 14px; }
+  label { font-size: 13px; font-weight: 600; color: var(--text-muted); margin-bottom: -8px; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 11px 13px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 14px; outline: none; transition: border-color .15s;
+  }
+  input:focus { border-color: var(--accent); }
+  button.primary {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 11px 16px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background .15s;
+  }
+  button.primary:hover { background: var(--accent-hover); }
+  button.primary:disabled { opacity: .6; cursor: default; }
+  .error-msg { color: var(--danger); font-size: 13px; min-height: 16px; }
+
+  /* Task view */
+  #task-form { display: flex; flex-direction: row; gap: 8px; margin-bottom: 20px; }
+  #task-form input { flex: 1; }
+  #task-form button { white-space: nowrap; }
+
+  ul#task-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .task-item {
+    display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+    transition: opacity .15s;
+  }
+  .task-item input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .task-item .title {
+    flex: 1; font-size: 14px; cursor: text; outline: none; word-break: break-word;
+  }
+  .task-item.done .title { text-decoration: line-through; color: var(--text-muted); }
+  .task-item .del-btn {
+    background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px;
+    padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+  }
+  .task-item .del-btn:hover { color: var(--danger); }
+
+  .empty-state { text-align: center; color: var(--text-muted); font-size: 14px; padding: 40px 0; }
+  .hidden { display: none !important; }
+
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 8px;
+    font-size: 13px; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+  #toast.error { background: var(--danger); color: #fff; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Tasks</h1>
+  <div class="user-badge hidden" id="user-badge">
+    <span id="username-display"></span>
+    <button class="link" id="logout-btn">Log out</button>
+  </div>
+</header>
+
+<main>
+  <div id="auth-view">
+    <div class="card">
+      <div class="tabs">
+        <button id="tab-login" class="active" type="button">Log in</button>
+        <button id="tab-register" type="button">Sign up</button>
+      </div>
+      <form id="auth-form">
+        <label for="auth-username">Username</label>
+        <input type="text" id="auth-username" autocomplete="username" required>
+        <label for="auth-password">Password</label>
+        <input type="password" id="auth-password" autocomplete="current-password" required>
+        <div class="error-msg" id="auth-error"></div>
+        <button class="primary" type="submit" id="auth-submit">Log in</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="task-view" class="hidden">
+    <form id="task-form">
+      <input type="text" id="task-title" placeholder="Add a task…" autocomplete="off" required>
+      <button class="primary" type="submit">Add</button>
+    </form>
+    <ul id="task-list"></ul>
+    <div class="empty-state hidden" id="empty-state">No tasks yet — add one above.</div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+(() => {
+  const API = "";
+  const state = { mode: "login", token: localStorage.getItem("token") || null, username: localStorage.getItem("username") || null };
+
+  const $ = (id) => document.getElementById(id);
+  const authView = $("auth-view"), taskView = $("task-view"), userBadge = $("user-badge");
+  const tabLogin = $("tab-login"), tabRegister = $("tab-register");
+  const authForm = $("auth-form"), authError = $("auth-error"), authSubmit = $("auth-submit");
+  const taskForm = $("task-form"), taskTitleInput = $("task-title"), taskList = $("task-list"), emptyState = $("empty-state");
+
+  function toast(msg, isError = false) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.className = isError ? "show error" : "show";
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => { t.className = ""; }, 2500);
+  }
+
+  function setMode(mode) {
+    state.mode = mode;
+    tabLogin.classList.toggle("active", mode === "login");
+    tabRegister.classList.toggle("active", mode === "register");
+    authSubmit.textContent = mode === "login" ? "Log in" : "Create account";
+    authError.textContent = "";
+  }
+  tabLogin.onclick = () => setMode("login");
+  tabRegister.onclick = () => setMode("register");
+
+  async function api(path, opts = {}) {
+    const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+    if (state.token) headers["Authorization"] = "Bearer " + state.token;
+    const res = await fetch(API + path, { ...opts, headers });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    return data;
+  }
+
+  function showTasks() {
+    authView.classList.add("hidden");
+    taskView.classList.remove("hidden");
+    userBadge.classList.remove("hidden");
+    $("username-display").textContent = state.username;
+    loadTasks();
+  }
+  function showAuth() {
+    authView.classList.remove("hidden");
+    taskView.classList.add("hidden");
+    userBadge.classList.add("hidden");
+  }
+
+  authForm.onsubmit = async (e) => {
+    e.preventDefault();
+    authError.textContent = "";
+    const username = $("auth-username").value.trim();
+    const password = $("auth-password").value;
+    authSubmit.disabled = true;
+    try {
+      if (state.mode === "register") {
+        await api("/api/register", { method: "POST", body: JSON.stringify({ username, password }) });
+        toast("Account created — logging you in…");
+      }
+      const data = await api("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
+      state.token = data.token;
+      state.username = username;
+      localStorage.setItem("token", state.token);
+      localStorage.setItem("username", state.username);
+      authForm.reset();
+      showTasks();
+    } catch (err) {
+      authError.textContent = err.message;
+    } finally {
+      authSubmit.disabled = false;
+    }
+  };
+
+  $("logout-btn").onclick = () => {
+    state.token = null; state.username = null;
+    localStorage.removeItem("token"); localStorage.removeItem("username");
+    showAuth();
+  };
+
+  function renderTasks(tasks) {
+    taskList.innerHTML = "";
+    emptyState.classList.toggle("hidden", tasks.length > 0);
+    for (const task of tasks) {
+      const li = document.createElement("li");
+      li.className = "task-item" + (task.done ? " done" : "");
+      li.dataset.id = task.id;
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = !!task.done;
+      checkbox.onchange = () => toggleDone(task.id, checkbox.checked, li);
+
+      const title = document.createElement("span");
+      title.className = "title";
+      title.contentEditable = "true";
+      title.textContent = task.title;
+      title.onblur = () => {
+        const newTitle = title.textContent.trim();
+        if (newTitle && newTitle !== task.title) editTitle(task.id, newTitle);
+        else title.textContent = task.title;
+      };
+      title.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); title.blur(); } };
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "del-btn";
+      delBtn.type = "button";
+      delBtn.innerHTML = "&times;";
+      delBtn.onclick = () => deleteTask(task.id, li);
+
+      li.append(checkbox, title, delBtn);
+      taskList.appendChild(li);
+    }
+  }
+
+  async function loadTasks() {
+    try {
+      const data = await api("/api/tasks");
+      renderTasks(data.tasks || []);
+    } catch (err) {
+      if (err.message.includes("401") || /unauthorized/i.test(err.message)) {
+        $("logout-btn").onclick();
+      }
+      toast(err.message, true);
+    }
+  }
+
+  taskForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const title = taskTitleInput.value.trim();
+    if (!title) return;
+    try {
+      await api("/api/tasks", { method: "POST", body: JSON.stringify({ title }) });
+      taskTitleInput.value = "";
+      loadTasks();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  async function toggleDone(id, done, li) {
+    try {
+      await api(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify({ done }) });
+      li.classList.toggle("done", done);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  async function editTitle(id, title) {
+    try {
+      await api(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify({ title }) });
+      toast("Saved");
+    } catch (err) {
+      toast(err.message, true);
+      loadTasks();
+    }
+  }
+
+  async function deleteTask(id, li) {
+    try {
+      await api(`/api/tasks/${id}`, { method: "DELETE" });
+      li.remove();
+      emptyState.classList.toggle("hidden", taskList.children.length > 0);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  if (state.token && state.username) showTasks(); else showAuth();
+})();
+</script>
+</body>
+</html>
