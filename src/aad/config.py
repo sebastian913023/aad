@@ -57,8 +57,11 @@ class Settings(BaseSettings):
     llamaparse_api_key: str | None = None
 
     # --- Commercial data providers --------------------------------------
-    # No public API exists for these; each is wired through an adapter that
-    # requires an explicit base URL + key from the shop's own subscription.
+    # No public API exists for these; each is described by a JSON profile
+    # (see aad/providers/profiles/) and needs an explicit base URL + key from
+    # the shop's own subscription. Point this at a directory of JSON files to
+    # override the shipped profiles without touching the package.
+    provider_profile_dir: Path | None = None
     torque_api_base: str | None = None
     torque_api_key: str | None = None
     labor_api_base: str | None = None
@@ -89,6 +92,31 @@ class Settings(BaseSettings):
     # Opt-in so the default test run needs no network. CI sets it to exercise
     # NHTSA against the real service.
     live_tests: bool = False
+
+
+    def provider_env(self) -> dict[str, str]:
+        """Environment map for provider profiles.
+
+        Profiles resolve credentials by environment variable name, but
+        pydantic-settings reads `.env` into this object without exporting it to
+        `os.environ`. Without this merge a key set in `.env` would load here and
+        still look unconfigured to the profile.
+        """
+        import os
+
+        from_settings = {
+            "AAD_TORQUE_API_BASE": self.torque_api_base,
+            "AAD_TORQUE_API_KEY": self.torque_api_key,
+            "AAD_LABOR_API_BASE": self.labor_api_base,
+            "AAD_LABOR_API_KEY": self.labor_api_key,
+            "AAD_PARTS_API_BASE": self.parts_api_base,
+            "AAD_PARTS_API_KEY": self.parts_api_key,
+            "AAD_OBD2_API_BASE": self.obd2_api_base,
+            "AAD_OBD2_API_KEY": self.obd2_api_key,
+            "AAD_WIRING_API_BASE": self.wiring_api_base,
+            "AAD_WIRING_API_KEY": self.wiring_api_key,
+        }
+        return {**os.environ, **{k: v for k, v in from_settings.items() if v}}
 
 
 @lru_cache

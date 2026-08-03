@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import re
 
-import httpx
+from pydantic import ValidationError
 
 from aad.config import Settings, get_settings
 from aad.errors import NoGroundingError, ProviderError
 from aad.models import LaborTime, Vehicle
+from aad.providers.client import call_provider
+from aad.providers.profiles import get_profile
 from aad.rag.retriever import Retriever
 
 _HOURS_RE = re.compile(
@@ -44,22 +46,22 @@ def extract_labor_times(text: str, operation: str) -> list[dict]:
 
 
 def _from_api(operation: str, vehicle: Vehicle, settings: Settings) -> list[LaborTime]:
-    response = httpx.get(
-        f"{settings.labor_api_base.rstrip('/')}/labor-times",
-        headers={"Authorization": f"Bearer {settings.labor_api_key}"},
-        params={
-            "year": vehicle.year,
-            "make": vehicle.make,
-            "model": vehicle.model,
-            "engine": vehicle.engine,
-            "vin": vehicle.vin,
-            "operation": operation,
-        },
-        timeout=30.0,
+    profile = get_profile("labor", settings.provider_profile_dir)
+    rows = call_provider(
+        profile, {**vehicle.model_dump(), "operation": operation}, env=settings.provider_env()
     )
-    if response.status_code >= 400:
-        raise ProviderError(f"labor provider returned {response.status_code}: {response.text[:200]}")
-    return [LaborTime.model_validate(item) for item in response.json().get("operations", [])]
+
+    times: list[LaborTime] = []
+    for row in rows:
+        try:
+            times.append(LaborTime.model_validate(row))
+        except ValidationError as exc:
+            raise ProviderError(
+                f"{profile.vendor} returned a row this profile cannot map to a labor "
+                f"time ({exc.error_count()} field error(s)). Compare the profile's "
+                f"field_map against the vendor's response format: {exc}"
+            ) from exc
+    return times
 
 
 def lookup_labor_time(
@@ -70,14 +72,16 @@ def lookup_labor_time(
 ) -> dict:
     settings = settings or get_settings()
 
-    if settings.labor_api_base and settings.labor_api_key:
+    profile = get_profile("labor", settings.provider_profile_dir)
+    if profile.is_configured(settings.provider_env()):
         times = _from_api(operation, vehicle, settings)
         if times:
             return {
                 "operation": operation,
                 "vehicle": vehicle.label(),
                 "labor_times": [t.model_dump(exclude_none=True) for t in times],
-                "source": "subscription labor time API",
+                "source": profile.vendor,
+                "provider_verified": profile.verified,
             }
 
     query = f"{operation} labor time book hours {vehicle.label()}"

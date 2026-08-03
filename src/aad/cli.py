@@ -100,18 +100,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if not ok:
             failures += 1
 
-    print("\nconfigured optional providers")
-    print("-----------------------------")
-    optional = {
-        "torque spec API": settings.torque_api_base,
-        "labor time API": settings.labor_api_base,
-        "parts catalog": settings.parts_api_base,
-        "OBD2 scan service": settings.obd2_api_base,
-        "wiring diagrams": settings.wiring_api_base,
-    }
-    for name, base in optional.items():
-        state = "configured" if base else "not configured (lookups will report a gap)"
-        print(f"  [{'ok  ' if base else '--  '}] {name}: {state}")
+    print("\ncommercial providers")
+    print("--------------------")
+    from aad.providers.profiles import load_profiles
+
+    env = settings.provider_env()
+    for name, profile in sorted(load_profiles(settings.provider_profile_dir).items()):
+        if not profile.is_configured(env):
+            print(f"  [--  ] {name}: not configured — set {', '.join(profile.missing(env))}")
+        elif not profile.verified:
+            print(f"  [warn] {name}: configured but UNVERIFIED — run `aad providers test {name}`")
+        else:
+            print(f"  [ok  ] {name}: {profile.vendor}")
 
     print("\nmodel")
     print("-----")
@@ -195,6 +195,173 @@ def cmd_verify_index(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --- providers ------------------------------------------------------------
+
+
+def _profiles(args: argparse.Namespace):
+    from aad.providers.profiles import load_profiles
+
+    settings = get_settings()
+    return load_profiles(getattr(args, "profile_dir", None) or settings.provider_profile_dir)
+
+
+def cmd_providers_list(args: argparse.Namespace) -> int:
+    profiles = _profiles(args)
+    print(f"{'provider':<10} {'configured':<11} {'verified':<9} vendor")
+    print(f"{'-' * 10} {'-' * 11} {'-' * 9} {'-' * 40}")
+    for name in sorted(profiles):
+        profile = profiles[name]
+        configured = "yes" if profile.is_configured() else "no"
+        verified = "yes" if profile.verified else "NO"
+        print(f"{name:<10} {configured:<11} {verified:<9} {profile.vendor}")
+
+    unconfigured = [p for p in profiles.values() if not p.is_configured()]
+    if unconfigured:
+        print("\nto configure:")
+        for profile in unconfigured:
+            print(f"  {profile.name}: set {', '.join(profile.missing())}")
+
+    unverified = [p for p in profiles.values() if p.is_configured() and not p.verified]
+    if unverified:
+        print(
+            "\nConfigured but unverified: the request/response mapping in these profiles "
+            "is a placeholder, not a contract anyone has exercised. Run "
+            "`aad providers test <name>` against the real service and set "
+            '"verified": true only once the mapping is confirmed.'
+        )
+    return EXIT_OK
+
+
+def cmd_providers_show(args: argparse.Namespace) -> int:
+    from aad.providers.client import build_request
+    from aad.providers.profiles import get_profile
+
+    settings = get_settings()
+    profile = get_profile(args.name, getattr(args, "profile_dir", None) or settings.provider_profile_dir)
+
+    print(f"provider:   {profile.name}")
+    print(f"vendor:     {profile.vendor}")
+    print(f"docs:       {profile.docs_url or '(none recorded)'}")
+    print(f"verified:   {'yes' if profile.verified else 'NO — mapping is a placeholder'}")
+    print(f"endpoint:   {profile.method} {{{profile.base_url_env}}}{profile.path}")
+    print(f"auth:       {profile.auth.type}" + (f" ({profile.auth.name})" if profile.auth.name else ""))
+    print(f"credential: {profile.credential_env}")
+    print(f"configured: {'yes' if profile.is_configured() else 'no — set ' + ', '.join(profile.missing())}")
+
+    problems = profile.validate_shape()
+    if problems:
+        print("\nprofile problems:")
+        for problem in problems:
+            print(f"  - {problem}")
+
+    print("\nrequest parameters (wire name <- our field):")
+    for wire, ours in sorted(profile.params.items()):
+        print(f"  {wire:<12} <- {ours}")
+
+    print("\nresponse mapping (our field <- response path):")
+    print(f"  results list <- {profile.results_path or '(response body)'}")
+    for ours, path in sorted(profile.field_map.items()):
+        print(f"  {ours:<16} <- {path}")
+
+    if profile.is_configured():
+        sample = build_request(
+            profile,
+            {
+                "year": 2004,
+                "make": "INFINITI",
+                "model": "G35",
+                "engine": "3.5L V6",
+                "component": "cylinder head bolts",
+                "operation": "replace water pump",
+                "query": "water pump",
+                "circuit": "camshaft position sensor",
+                "limit": 10,
+            },
+        )
+        redacted = dict(sample)
+        redacted["headers"] = {
+            k: ("***redacted***" if k.lower() == "authorization" else v)
+            for k, v in sample["headers"].items()
+        }
+        print("\nexample request (credential redacted):")
+        print(f"  {redacted['method']} {redacted['url']}")
+        print(f"  headers: {redacted['headers']}")
+        print(f"  params:  {redacted.get('params') or redacted.get('json')}")
+
+    return EXIT_FAIL if problems else EXIT_OK
+
+
+def cmd_providers_test(args: argparse.Namespace) -> int:
+    """Make one real call and report exactly what came back.
+
+    This is the step that turns `verified: false` into a decision you can defend:
+    it shows the mapped result next to the raw payload, so a silent field-name
+    mismatch is visible rather than showing up later as a missing torque unit.
+    """
+    import json as _json
+
+    from aad.errors import AadError
+    from aad.providers.client import build_request, call_provider
+    from aad.providers.profiles import get_profile
+
+    settings = get_settings()
+    profile = get_profile(args.name, getattr(args, "profile_dir", None) or settings.provider_profile_dir)
+
+    if not profile.is_configured():
+        print(
+            f"{profile.name} is not configured: set {', '.join(profile.missing())}",
+            file=sys.stderr,
+        )
+        return EXIT_FAIL
+
+    source = {
+        "year": args.year,
+        "make": args.make,
+        "model": args.model,
+        "engine": args.engine,
+        "vin": args.vin,
+        "component": args.arg,
+        "operation": args.arg,
+        "query": args.arg,
+        "circuit": args.arg,
+        "scan_id": args.arg,
+        "limit": 5,
+    }
+
+    request = build_request(profile, source)
+    print(f"{request['method']} {request['url']}")
+    print(f"params: {request.get('params') or request.get('json')}\n")
+
+    try:
+        results = call_provider(profile, source)
+    except AadError as exc:
+        print(f"FAILED: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+
+    if not results:
+        print("Call succeeded but returned zero results.")
+        print(
+            "That may be correct for this vehicle, or the profile's results_path may be "
+            "wrong. Try a vehicle you know has data before trusting the mapping."
+        )
+        return EXIT_FAIL
+
+    print(f"{len(results)} result(s), mapped through the profile's field_map:\n")
+    print(_json.dumps(results[: args.limit], indent=2, default=str))
+
+    empty = [k for k, v in results[0].items() if v is None]
+    unmapped = sorted(set(profile.field_map) - set(results[0]))
+    if unmapped:
+        print(
+            f"\nFields the mapping produced nothing for: {', '.join(unmapped)}. "
+            "Either the vendor does not return them, or the field_map paths are wrong."
+        )
+    if not unmapped and not empty:
+        print("\nEvery mapped field was populated. If the values look right, set "
+              f'"verified": true in the {profile.name} profile.')
+    return EXIT_OK
+
+
 # --- serve / check --------------------------------------------------------
 
 
@@ -272,6 +439,28 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="live-check provider reachability and configuration")
     doctor.add_argument("--timeout", type=float, default=20.0)
     doctor.set_defaults(handler=cmd_doctor)
+
+    providers = sub.add_parser("providers", help="inspect and test the commercial providers")
+    providers.add_argument("--profile-dir", help="directory of JSON profile overrides")
+    psub = providers.add_subparsers(dest="providers_command", required=True)
+
+    plist = psub.add_parser("list", help="show configuration state for every provider")
+    plist.set_defaults(handler=cmd_providers_list)
+
+    pshow = psub.add_parser("show", help="show one profile and the request it would send")
+    pshow.add_argument("name")
+    pshow.set_defaults(handler=cmd_providers_show)
+
+    ptest = psub.add_parser("test", help="make one real call and show the mapped result")
+    ptest.add_argument("name")
+    ptest.add_argument("--arg", default="water pump", help="component / operation / query / circuit")
+    ptest.add_argument("--year", type=int, default=2018)
+    ptest.add_argument("--make", default="Honda")
+    ptest.add_argument("--model", default="Accord")
+    ptest.add_argument("--engine", default=None)
+    ptest.add_argument("--vin", default=None)
+    ptest.add_argument("--limit", type=int, default=3)
+    ptest.set_defaults(handler=cmd_providers_test)
 
     verify = sub.add_parser("verify-index", help="report whether the corpus is fit to serve")
     verify.add_argument(

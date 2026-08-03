@@ -7,11 +7,11 @@ indistinguishable from an invented one once it reaches a test light.
 
 from __future__ import annotations
 
-import httpx
-
 from aad.config import Settings, get_settings
-from aad.errors import NoGroundingError, ProviderError
+from aad.errors import NoGroundingError
 from aad.models import Vehicle
+from aad.providers.client import call_provider
+from aad.providers.profiles import get_profile
 from aad.rag.retriever import Retriever
 
 
@@ -23,31 +23,20 @@ def lookup_wiring(
 ) -> dict:
     settings = settings or get_settings()
 
-    if settings.wiring_api_base and settings.wiring_api_key:
-        response = httpx.get(
-            f"{settings.wiring_api_base.rstrip('/')}/wiring-diagrams",
-            headers={"Authorization": f"Bearer {settings.wiring_api_key}"},
-            params={
-                "year": vehicle.year,
-                "make": vehicle.make,
-                "model": vehicle.model,
-                "engine": vehicle.engine,
-                "vin": vehicle.vin,
-                "circuit": circuit,
-            },
-            timeout=30.0,
+    profile = get_profile("wiring", settings.provider_profile_dir)
+    if profile.is_configured(settings.provider_env()):
+        diagrams = call_provider(
+            profile, {**vehicle.model_dump(), "circuit": circuit}, env=settings.provider_env()
         )
-        if response.status_code >= 400:
-            raise ProviderError(
-                f"wiring provider returned {response.status_code}: {response.text[:200]}"
-            )
-        payload = response.json()
-        if payload.get("diagrams"):
+        if diagrams:
             return {
                 "circuit": circuit,
                 "vehicle": vehicle.label(),
-                "diagrams": payload["diagrams"],
-                "source": "subscription wiring diagram API",
+                "diagrams": diagrams,
+                "source": profile.vendor,
+                "provider_verified": profile.verified,
+                "instruction": "Quote wire colours and pin numbers verbatim from the "
+                "provider response.",
             }
 
     try:

@@ -7,11 +7,13 @@ plausible-looking part numbers — a wrong part number is a wasted parts run.
 
 from __future__ import annotations
 
-import httpx
+from pydantic import ValidationError
 
 from aad.config import Settings, get_settings
 from aad.errors import NotConfiguredError, ProviderError
 from aad.models import Part, Vehicle
+from aad.providers.client import call_provider
+from aad.providers.profiles import get_profile
 
 
 def search_parts(
@@ -22,35 +24,35 @@ def search_parts(
     limit: int = 10,
 ) -> dict:
     settings = settings or get_settings()
-    if not (settings.parts_api_base and settings.parts_api_key):
+    profile = get_profile("parts", settings.provider_profile_dir)
+
+    env = settings.provider_env()
+    if not profile.is_configured(env):
         raise NotConfiguredError(
             "parts-catalog",
-            "set AAD_PARTS_API_BASE and AAD_PARTS_API_KEY for your supplier account "
-            "(NAPA, WorldPac, or equivalent). Part numbers and prices are never inferred.",
+            f"set {' and '.join(profile.missing(env))} for your supplier account "
+            f"({profile.vendor}). Part numbers and prices are never inferred.",
         )
 
-    response = httpx.get(
-        f"{settings.parts_api_base.rstrip('/')}/parts/search",
-        headers={"Authorization": f"Bearer {settings.parts_api_key}"},
-        params={
-            "q": query,
-            "year": vehicle.year,
-            "make": vehicle.make,
-            "model": vehicle.model,
-            "engine": vehicle.engine,
-            "vin": vehicle.vin,
-            "limit": limit,
-        },
-        timeout=30.0,
+    rows = call_provider(
+        profile, {**vehicle.model_dump(), "query": query, "limit": limit}, env=env
     )
-    if response.status_code >= 400:
-        raise ProviderError(f"parts provider returned {response.status_code}: {response.text[:200]}")
 
-    payload = response.json()
-    parts = [Part.model_validate(item) for item in payload.get("parts", [])][:limit]
+    parts: list[Part] = []
+    for row in rows[:limit]:
+        try:
+            parts.append(Part.model_validate(row))
+        except ValidationError as exc:
+            raise ProviderError(
+                f"{profile.vendor} returned a row this profile cannot map to a part "
+                f"({exc.error_count()} field error(s)). Compare the profile's field_map "
+                f"against the vendor's response format: {exc}"
+            ) from exc
+
     return {
         "query": query,
         "vehicle": vehicle.label(),
         "parts": [part.model_dump(exclude_none=True) for part in parts],
-        "source": payload.get("source", "supplier catalog"),
+        "source": profile.vendor,
+        "provider_verified": profile.verified,
     }

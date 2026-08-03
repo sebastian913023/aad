@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import re
 
-import httpx
+from pydantic import ValidationError
 
 from aad.config import Settings, get_settings
 from aad.errors import NoGroundingError, ProviderError
 from aad.models import TorqueSpec, Vehicle
+from aad.providers.client import call_provider
+from aad.providers.profiles import get_profile
 from aad.rag.retriever import Retriever
 
 # Value + unit, e.g. "22 lb-ft", "30 N·m", "106 in-lbs", "18-22 ft-lb".
@@ -88,22 +90,25 @@ def extract_torque_specs(text: str, component: str) -> list[dict]:
 
 
 def _from_api(component: str, vehicle: Vehicle, settings: Settings) -> list[TorqueSpec]:
-    response = httpx.get(
-        f"{settings.torque_api_base.rstrip('/')}/torque-specs",
-        headers={"Authorization": f"Bearer {settings.torque_api_key}"},
-        params={
-            "year": vehicle.year,
-            "make": vehicle.make,
-            "model": vehicle.model,
-            "engine": vehicle.engine,
-            "vin": vehicle.vin,
-            "component": component,
-        },
-        timeout=30.0,
+    profile = get_profile("torque", settings.provider_profile_dir)
+    rows = call_provider(
+        profile, {**vehicle.model_dump(), "component": component}, env=settings.provider_env()
     )
-    if response.status_code >= 400:
-        raise ProviderError(f"torque provider returned {response.status_code}: {response.text[:200]}")
-    return [TorqueSpec.model_validate(item) for item in response.json().get("specs", [])]
+
+    specs: list[TorqueSpec] = []
+    for row in rows:
+        try:
+            specs.append(TorqueSpec.model_validate(row))
+        except ValidationError as exc:
+            # A mapping mismatch must not degrade into a partial spec. Say which
+            # profile is wrong rather than handing back a torque value missing
+            # its unit.
+            raise ProviderError(
+                f"{profile.vendor} returned a row this profile cannot map to a torque "
+                f"spec ({exc.error_count()} field error(s)). Compare the profile's "
+                f"field_map against the vendor's response format: {exc}"
+            ) from exc
+    return specs
 
 
 def lookup_torque_spec(
@@ -114,14 +119,16 @@ def lookup_torque_spec(
 ) -> dict:
     settings = settings or get_settings()
 
-    if settings.torque_api_base and settings.torque_api_key:
+    profile = get_profile("torque", settings.provider_profile_dir)
+    if profile.is_configured(settings.provider_env()):
         specs = _from_api(component, vehicle, settings)
         if specs:
             return {
                 "component": component,
                 "vehicle": vehicle.label(),
                 "specs": [spec.model_dump(exclude_none=True) for spec in specs],
-                "source": "subscription torque specification API",
+                "source": profile.vendor,
+                "provider_verified": profile.verified,
             }
 
     query = f"{component} torque specification tightening bolt size {vehicle.label()}"

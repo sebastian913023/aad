@@ -53,6 +53,67 @@ goes near a vehicle.
 is correct, these tell you whether the *data* behind it is real, licensed and
 vehicle-scoped — which no unit test can determine.
 
+## Configuring the commercial providers
+
+Mitchell 1, ALLDATA, NAPA and the OBD2 scan services are partner-gated — no public API
+contract, and each differs in auth scheme, path, parameter names and response envelope.
+Rather than one guessed REST shape hard-coded per provider, each is described by a JSON
+**profile** in `src/aad/providers/profiles/`. Pointing the system at a real subscription
+is a config change, not a code change.
+
+```bash
+export AAD_TORQUE_API_BASE=https://your-prodemand-endpoint/api
+export AAD_TORQUE_API_KEY=...              # or put both in .env
+
+aad providers list                          # configuration state for all five
+aad providers show torque                   # the exact request it would send
+aad providers test torque --arg "cylinder head bolts" --year 2004 --make INFINITI --model G35
+```
+
+`aad providers test` makes one real call and prints the mapped result beside the fields
+the mapping produced nothing for, so a field-name mismatch is visible immediately rather
+than surfacing later as a torque value with no unit.
+
+### Adjusting a profile to your vendor
+
+Copy the shipped profile, edit it to match the vendor's own API documentation, and point
+`AAD_PROVIDER_PROFILE_DIR` at your directory:
+
+```json
+{
+  "name": "torque",
+  "vendor": "Mitchell 1 ProDemand",
+  "verified": true,
+  "base_url_env": "AAD_TORQUE_API_BASE",
+  "credential_env": "AAD_TORQUE_API_KEY",
+  "auth": { "type": "header", "name": "X-Api-Key" },
+  "method": "GET",
+  "path": "/v2/specifications/torque",
+  "params": { "vehicleYear": "year", "vehicleMake": "make", "part": "component" },
+  "results_path": "data.specifications",
+  "field_map": { "component": "partName", "value": "torque.value", "unit": "torque.units" }
+}
+```
+
+`auth.type` is one of `bearer`, `header`, `query`, `basic`, `none`. `params` maps the
+vendor's wire parameter name to our field (`year`, `make`, `model`, `engine`, `vin`, plus
+the endpoint's own argument). `results_path` and `field_map` take dotted paths into the
+response, list indices included.
+
+### `verified: false`
+
+Every shipped profile carries `"verified": false`, and a test asserts it stays that way.
+That flag means precisely what it says: **the request and response shapes are placeholders
+derived from vendor product documentation, not a contract anyone has exercised.** They
+will almost certainly need adjusting against your account's real API docs. Flip the flag
+to `true` only after `aad providers test` returns correct data — `aad providers list` and
+`aad doctor` both report configured-but-unverified providers as a warning, and every
+lookup response carries `provider_verified` so the state travels with the data.
+
+Credentials are read from the environment (or `.env`, which is gitignored) and never
+written to the repo. They are redacted from provider error messages, because those
+messages reach both the model and HTTP callers.
+
 ## Production readiness
 
 Passing tests does not mean this is safe to put in front of a technician. Two gates
