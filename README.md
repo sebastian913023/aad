@@ -24,17 +24,62 @@ built.
 uv venv --python 3.11 .venv
 uv pip install -e ".[dev]" pypdf     # pypdf is optional; needed for PDF ingestion
 
-.venv/bin/aad-ingest add data/samples          # index the synthetic sample manual
-.venv/bin/aad-ingest stats                     # see what is indexed
-.venv/bin/python -m pytest -q                  # 61 tests, no network or API key needed
+.venv/bin/aad ingest add data/samples    # index the synthetic sample manual
+.venv/bin/aad check                      # lint + 73 tests, no network or API key needed
+.venv/bin/aad verify-index               # what is indexed, and whether it is fit to serve
+.venv/bin/aad doctor                     # live-check NHTSA and report provider config
 
-cp .env.example .env                           # then set ANTHROPIC_API_KEY to use /diagnose
-.venv/bin/uvicorn aad.api:app --reload
+cp .env.example .env                     # then set ANTHROPIC_API_KEY to use /diagnose
+.venv/bin/aad serve --reload
 ```
 
 `data/samples/` contains a **synthetic** manual excerpt for testing the pipeline. Its
-numbers are invented. Replace it with licensed OEM documentation before the system goes
-near a vehicle.
+numbers are invented, it is flagged `synthetic: true`, and the guards below make sure it
+cannot reach a technician. Replace it with licensed OEM documentation before the system
+goes near a vehicle.
+
+## The `aad` command
+
+| Command | Purpose |
+|---|---|
+| `aad ingest add\|stats\|remove` | index service documentation |
+| `aad serve` | run the HTTP API |
+| `aad check [--live]` | run exactly what CI runs: ruff, then pytest |
+| `aad doctor` | live-check NHTSA reachability and report which providers are configured |
+| `aad verify-index [--production]` | report whether the indexed corpus is fit to serve |
+
+`aad check` exists so a red PR is reproducible locally with one command. `doctor` and
+`verify-index` answer a different question from the test suite: tests tell you the code
+is correct, these tell you whether the *data* behind it is real, licensed and
+vehicle-scoped — which no unit test can determine.
+
+## Production readiness
+
+Passing tests does not mean this is safe to put in front of a technician. Two gates
+separate the two:
+
+**Synthetic material is flagged and fenced.** A document whose sidecar carries
+`"synthetic": true` marks every chunk it produces. With `AAD_PRODUCTION_MODE=true` the
+retriever excludes those chunks from every search, so sample data physically cannot
+reach a bay even if someone indexes it by accident.
+
+**`aad verify-index --production` is the gate.** It exits non-zero if the index is
+empty, contains synthetic chunks, or contains chunks without year/make/model. CI asserts
+this gate *fails* on the bundled sample corpus — if it ever passes there, the guard has
+regressed and the build goes red.
+
+```
+$ aad verify-index --production
+chunks:           6
+synthetic:        6 across 1 source(s)
+
+NOT READY FOR PRODUCTION USE
+  - 6 synthetic chunk(s) from: sample_service_manual.md. These carry invented values
+    and must not back a production deployment.
+```
+
+The gate checks provenance flags, not licensing. It cannot tell you whether a document
+is covered by your subscription — that remains a human decision.
 
 ## How grounding is enforced
 
@@ -167,16 +212,31 @@ sidecar is the better path for a mixed directory:
 {"year": 2004, "make": "INFINITI", "model": "G35", "engine": "3.5L V6 VQ35DE"}
 ```
 
-## Tests
+## Tests and CI
 
-61 tests, no network and no API key required. The agent loop is tested against a scripted
-client, so tool dispatch, citation harvesting, refusal handling, and the turn budget are
-all covered without calling the API.
+73 hermetic tests, no network and no API key required. The agent loop is tested against a
+scripted client, so tool dispatch, citation harvesting, refusal handling, and the turn
+budget are all covered without calling the API.
 
 ```bash
-.venv/bin/python -m pytest -q
-.venv/bin/python -m ruff check src tests
+.venv/bin/aad check           # ruff + pytest, the same gates CI runs
+.venv/bin/aad check --live    # also run the live provider tests
 ```
+
+CI (`.github/workflows/ci.yml`) runs on every push and PR, as two jobs:
+
+- **tests + lint** — ruff, pytest, an ingestion smoke test, and the readiness-gate
+  assertion described above.
+- **live provider APIs (NHTSA)** — `aad doctor` plus 8 tests that hit the real vPIC and
+  recalls services. Kept in its own job on purpose: an NHTSA outage should read as an
+  upstream problem, not as a failure of the diff under review. It also runs weekly on a
+  schedule so upstream drift surfaces without waiting for a push.
+
+Live tests are marked `live` and deselected by default (`-m 'not live'` in
+`pyproject.toml`), additionally gated on `AAD_LIVE_TESTS=1`. They assert on response
+*shape and semantics* rather than specific vehicle data, because the vPIC dataset changes
+over time and a test pinned to today's trim string would fail for reasons unrelated to
+this code.
 
 ## Delivery status
 
@@ -198,11 +258,34 @@ adapters assume a conventional REST shape and will need their request/response m
 adjusted to each vendor's actual contract — a small change per provider, isolated to one
 function.
 
-**Verified vs unverified.** Everything above is covered by the test suite. The live NHTSA
-calls (vPIC decode, recalls) are unit-tested for validation and parsing logic but could
-not be exercised against the real service from this sandbox — outbound requests to
-`vpic.nhtsa.dot.gov` are blocked by the environment's proxy. Run that path once on a
-networked machine before relying on it.
+**Verified vs unverified.** Everything above is covered by the hermetic suite. The live
+NHTSA path (vPIC decode, recalls) has tests written against the real services, but they
+have never been executed in the development sandbox: outbound CONNECT to
+`vpic.nhtsa.dot.gov:443` and `api.nhtsa.gov:443` is refused with 403 by the environment's
+egress policy. **CI runs them** — the `live provider APIs` job executes on a GitHub
+runner with open internet, so the PR's check status is the authoritative answer on
+whether the NHTSA integration works. Until that job has gone green at least once, treat
+the NHTSA path as untested.
+
+## Not ready to touch vehicles
+
+Being blunt about this, because the failure mode is expensive:
+
+1. **The corpus is synthetic.** No licensed OEM documentation is included, and none can
+   be — Mitchell 1, ALLDATA and OEM manuals are proprietary and paywalled. The invented
+   sample values must never be treated as specifications, which is what the
+   `synthetic` flag and the readiness gate exist to enforce.
+2. **Every commercial provider is unconfigured.** Torque, labor, parts, wiring and OBD2
+   lookups all report a gap until a shop wires in its own subscription, and each adapter's
+   request/response mapping will need adjusting to that vendor's actual contract.
+3. **The live NHTSA integration is unverified** until CI's live job passes.
+4. **No accuracy evaluation has been run.** The grounding *mechanisms* are tested; the
+   end-to-end accuracy of retrieval and extraction against real manuals is not, and
+   cannot be until (1) is resolved.
+
+The system is a technician's reference, not an authority. Nothing here removes the
+technician's obligation to verify a specification against the OEM source before the
+wrench moves.
 
 ## One deviation from the specification
 

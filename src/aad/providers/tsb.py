@@ -24,15 +24,23 @@ def search_recalls(vehicle: Vehicle, *, timeout: float = 20.0) -> dict:
             "Decode the VIN first.",
         }
 
-    response = httpx.get(
-        RECALLS_URL,
-        params={"make": vehicle.make, "model": vehicle.model, "modelYear": vehicle.year},
-        timeout=timeout,
-    )
+    try:
+        response = httpx.get(
+            RECALLS_URL,
+            params={"make": vehicle.make, "model": vehicle.model, "modelYear": vehicle.year},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        raise ProviderError(f"NHTSA recalls unreachable: {type(exc).__name__}: {exc}") from exc
+
     if response.status_code >= 400:
         raise ProviderError(f"NHTSA recalls returned {response.status_code}")
 
-    results = response.json().get("results", []) or []
+    try:
+        results = response.json().get("results", []) or []
+    except ValueError as exc:
+        raise ProviderError("NHTSA recalls returned a non-JSON response") from exc
+
     return {
         "vehicle": vehicle.label(),
         "recalls": [

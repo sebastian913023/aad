@@ -71,7 +71,13 @@ class Citation(BaseModel):
 
 
 class Chunk(BaseModel):
-    """An indexed unit of source material."""
+    """An indexed unit of source material.
+
+    `synthetic` marks demo or test material. It exists so sample data cannot be
+    mistaken for a licensed source: in production mode the retriever filters these
+    out entirely, and `aad verify-index --production` refuses an index containing
+    any of them.
+    """
 
     chunk_id: str
     text: str
@@ -83,6 +89,7 @@ class Chunk(BaseModel):
     make: str | None = None
     model: str | None = None
     engine: str | None = None
+    synthetic: bool = False
 
     def metadata(self) -> dict:
         return {
@@ -94,6 +101,7 @@ class Chunk(BaseModel):
             "make": self.make,
             "model": self.model,
             "engine": self.engine,
+            "synthetic": self.synthetic,
         }
 
 

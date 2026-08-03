@@ -25,11 +25,15 @@ class Retriever:
         *,
         top_k: int = 8,
         min_similarity: float = 0.05,
+        exclude_synthetic: bool = False,
     ) -> None:
         self.store = store
         self.embedder = embedder
         self.top_k = top_k
         self.min_similarity = min_similarity
+        # Production deployments exclude demo/test material outright, so sample
+        # data cannot reach a technician even if someone indexes it by accident.
+        self.exclude_synthetic = exclude_synthetic
 
     def search(
         self,
@@ -46,6 +50,8 @@ class Retriever:
         filters = vehicle.filter_dict()
         if spec_type:
             filters["spec_type"] = spec_type
+        if self.exclude_synthetic:
+            filters["synthetic"] = False
 
         vector = self.embedder.embed([query])[0]
         results = self.store.query(vector, top_k or self.top_k, filters)
@@ -70,4 +76,5 @@ def get_retriever(settings: Settings | None = None) -> Retriever:
         embedder=get_embedder(settings),
         top_k=settings.retrieval_top_k,
         min_similarity=settings.min_similarity,
+        exclude_synthetic=settings.production_mode,
     )

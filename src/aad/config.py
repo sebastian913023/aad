@@ -79,6 +79,17 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 8
     min_similarity: float = 0.05
 
+    # --- Production safety ------------------------------------------------
+    # With production_mode on, documents flagged `synthetic` are excluded from
+    # every retrieval. Turn it on for any deployment a technician can reach, so
+    # demo data physically cannot reach a bay.
+    production_mode: bool = False
+
+    # --- Live provider tests ---------------------------------------------
+    # Opt-in so the default test run needs no network. CI sets it to exercise
+    # NHTSA against the real service.
+    live_tests: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

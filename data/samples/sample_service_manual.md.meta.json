@@ -2,5 +2,7 @@
   "year": 2004,
   "make": "INFINITI",
   "model": "G35",
-  "engine": "3.5L V6 VQ35DE"
+  "engine": "3.5L V6 VQ35DE",
+  "synthetic": true,
+  "note": "Invented values for pipeline testing. `synthetic: true` excludes this document from every retrieval when AAD_PRODUCTION_MODE=true, and makes `aad verify-index --production` fail."
 }

@@ -28,6 +28,7 @@ class DocumentMeta:
     make: str | None = None
     model: str | None = None
     engine: str | None = None
+    synthetic: bool = False
 
     @classmethod
     def from_sidecar(cls, path: Path) -> DocumentMeta | None:
@@ -40,6 +41,7 @@ class DocumentMeta:
             make=data.get("make"),
             model=data.get("model"),
             engine=data.get("engine"),
+            synthetic=bool(data.get("synthetic", False)),
         )
 
     def is_empty(self) -> bool:
@@ -51,6 +53,7 @@ class IngestReport:
     files: int = 0
     chunks_written: int = 0
     chunks_seen: int = 0
+    synthetic_chunks: int = 0
     by_spec_type: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -59,6 +62,8 @@ class IngestReport:
         self.chunks_seen += len(chunks)
         for chunk in chunks:
             self.by_spec_type[chunk.spec_type] = self.by_spec_type.get(chunk.spec_type, 0) + 1
+            if chunk.synthetic:
+                self.synthetic_chunks += 1
 
 
 def iter_documents(root: Path) -> list[Path]:
@@ -101,6 +106,7 @@ def ingest_path(
             make=doc_meta.make,
             model=doc_meta.model,
             engine=doc_meta.engine,
+            synthetic=doc_meta.synthetic,
         )
         if not chunks:
             report.errors.append(f"{document.name}: parsed but produced no chunks")

@@ -111,6 +111,7 @@ def chunk_document(
     make: str | None = None,
     model: str | None = None,
     engine: str | None = None,
+    synthetic: bool = False,
 ) -> list[Chunk]:
     """Chunk parsed pages into indexable units carrying full asset metadata."""
     words_per_chunk = max(int(chunk_tokens / TOKENS_PER_WORD), 1)
@@ -143,6 +144,7 @@ def chunk_document(
                         make=make.lower() if make else None,
                         model=model.lower() if model else None,
                         engine=engine.lower() if engine else None,
+                        synthetic=synthetic,
                     )
                 )
     return chunks

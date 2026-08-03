@@ -73,11 +73,22 @@ def decode_vin(vin: str, *, timeout: float = 20.0) -> dict:
     vin = vin.strip().upper()
     valid, reason = validate_vin(vin)
 
-    response = httpx.get(VPIC_URL.format(vin=vin), params={"format": "json"}, timeout=timeout)
+    try:
+        response = httpx.get(VPIC_URL.format(vin=vin), params={"format": "json"}, timeout=timeout)
+    except httpx.HTTPError as exc:
+        # Transport failures become ProviderError so callers see one error type
+        # for "the provider did not answer" — and the API maps it to 502 rather
+        # than leaking an unhandled exception as a 500.
+        raise ProviderError(f"NHTSA vPIC unreachable: {type(exc).__name__}: {exc}") from exc
+
     if response.status_code >= 400:
         raise ProviderError(f"NHTSA vPIC returned {response.status_code} for VIN {vin}")
 
-    results = response.json().get("Results") or []
+    try:
+        results = response.json().get("Results") or []
+    except ValueError as exc:
+        raise ProviderError(f"NHTSA vPIC returned a non-JSON response for VIN {vin}") from exc
+
     if not results:
         raise ProviderError(f"NHTSA vPIC returned no results for VIN {vin}")
     record = results[0]

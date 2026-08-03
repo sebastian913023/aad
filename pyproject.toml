@@ -21,6 +21,7 @@ dev = [
 ]
 
 [project.scripts]
+aad = "aad.cli:main"
 aad-ingest = "aad.ingest.cli:main"
 
 [build-system]
@@ -34,6 +35,12 @@ packages = ["src/aad"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Live tests hit real third-party services. Deselected by default so the suite
+# stays hermetic; CI runs them in a separate job via `-m live`.
+addopts = "-m 'not live'"
+markers = [
+    "live: exercises a real external service (needs network and AAD_LIVE_TESTS=1)",
+]
 
 [tool.ruff]
 line-length = 100
