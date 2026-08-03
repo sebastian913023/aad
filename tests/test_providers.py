@@ -83,8 +83,10 @@ def test_extract_torque_specs_handles_ranges_and_imperial():
 
 
 def test_extract_torque_specs_detects_sequence_and_stages():
+    # The section heading supplies the component context, as it does in the real
+    # call path — the sentence itself never says "cylinder head".
     text = "Stage 1: torque all bolts to 40 Nm in sequence shown. Bolt size M11 x 1.5."
-    found = extract_torque_specs(text, "cylinder head bolts")
+    found = extract_torque_specs(text, "cylinder head bolts", "CYLINDER HEAD - TIGHTENING SEQUENCE")
     assert found[0]["sequence"] is not None
 
 

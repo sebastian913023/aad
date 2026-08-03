@@ -39,6 +39,20 @@ jobs:
           aad ingest add data/samples
           aad ingest stats
 
+      - name: Evaluation harness refuses a synthetic corpus
+        run: |
+          if aad eval --goldset data/eval/sample_goldset.jsonl; then
+            echo "::error::eval reported accuracy over synthetic data; the refusal is broken"
+            exit 1
+          fi
+          echo "eval correctly refuses to score synthetic material"
+
+      - name: Evaluation harness self-test
+        # Not an accuracy claim — this exercises the scorer and, critically, guards
+        # the extraction relevance gate that stops an absent component picking up an
+        # unrelated torque value.
+        run: aad eval --goldset data/eval/sample_goldset.jsonl --allow-synthetic
+
       - name: Index readiness gate
         # Must report NOT ready: the sample corpus is synthetic. If this ever
         # passes on the sample data, the synthetic guard has regressed.

@@ -362,6 +362,109 @@ def cmd_providers_test(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --- eval -----------------------------------------------------------------
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Score the system against a gold set drawn from the indexed corpus.
+
+    Refuses to report accuracy over synthetic material unless explicitly forced.
+    A number computed against invented specifications reads as evidence and is
+    not evidence, and that is a worse failure than having no number.
+    """
+    import json as _json
+
+    from aad.errors import AadError
+    from aad.evaluation import load_goldset, run_evaluation
+    from aad.rag.store import LocalVectorStore, get_vector_store
+
+    settings = get_settings()
+
+    try:
+        cases = load_goldset(args.goldset)
+    except (AadError, OSError, ValueError) as exc:
+        print(f"could not load gold set: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+
+    store = get_vector_store(settings)
+    synthetic = 0
+    sources: dict[str, int] = {}
+    if isinstance(store, LocalVectorStore):
+        sources = store.sources()
+        synthetic = sum(1 for c in store._chunks if c.synthetic)
+
+    if synthetic and not args.allow_synthetic:
+        print("REFUSING TO REPORT ACCURACY", file=sys.stderr)
+        print(
+            f"\nThe index contains {synthetic} synthetic chunk(s). An accuracy figure "
+            "measured against invented specifications would look like evidence while "
+            "meaning nothing.\n\n"
+            "Index licensed OEM documentation, confirm with `aad verify-index --production`, "
+            "then re-run. To exercise the harness itself on sample data (results are not an "
+            "accuracy claim), pass --allow-synthetic.",
+            file=sys.stderr,
+        )
+        return EXIT_FAIL
+
+    report = run_evaluation(cases, settings=settings)
+    report.corpus_sources = sources
+    report.synthetic_chunks = synthetic
+
+    if args.json:
+        print(_json.dumps(report.to_dict(), indent=2))
+    else:
+        if synthetic:
+            print("*** HARNESS SELF-TEST ON SYNTHETIC DATA — NOT AN ACCURACY RESULT ***\n")
+        print(f"cases:              {report.total}")
+        print(f"  correct:          {report.count('correct')}")
+        print(f"  wrong:            {report.count('wrong')}")
+        print(f"  abstained:        {report.count('abstained')}  (correctly said unavailable)")
+        print(f"  missed:           {report.count('missed')}  (abstained but answer was present)")
+        print(f"  error:            {report.count('error')}")
+        print()
+        print(f"accuracy:           {report.accuracy:.1%}")
+        print(f"precision:          {report.precision:.1%}  (of those it chose to answer)")
+        print(f"hallucination rate: {report.hallucination_rate:.1%}  <- gate metric")
+        print(f"abstention rate:    {report.abstention_rate:.1%}")
+        print(f"citation coverage:  {report.citation_coverage:.1%}")
+        if report.retrieval_recall is not None:
+            print(f"retrieval recall:   {report.retrieval_recall:.1%}")
+
+        failures = [r for r in report.results if r.outcome in ("wrong", "error")]
+        if failures:
+            print("\nfailures:")
+            for r in failures:
+                print(f"  [{r.outcome}] {r.id}: {r.detail}")
+                if r.expected or r.actual:
+                    print(f"      expected {r.expected!r}, got {r.actual!r}")
+
+    gate_failures: list[str] = []
+    if report.hallucination_rate > args.max_hallucination_rate:
+        gate_failures.append(
+            f"hallucination rate {report.hallucination_rate:.1%} exceeds the limit "
+            f"{args.max_hallucination_rate:.1%}"
+        )
+    if report.citation_coverage < args.min_citation_coverage:
+        gate_failures.append(
+            f"citation coverage {report.citation_coverage:.1%} is below the required "
+            f"{args.min_citation_coverage:.1%}"
+        )
+    if report.accuracy < args.min_accuracy:
+        gate_failures.append(
+            f"accuracy {report.accuracy:.1%} is below the required {args.min_accuracy:.1%}"
+        )
+
+    if gate_failures:
+        print("\nEVALUATION GATE FAILED", file=sys.stderr)
+        for failure in gate_failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return EXIT_FAIL
+
+    if not args.json:
+        print("\nevaluation gates passed")
+    return EXIT_OK
+
+
 # --- serve / check --------------------------------------------------------
 
 
@@ -439,6 +542,19 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="live-check provider reachability and configuration")
     doctor.add_argument("--timeout", type=float, default=20.0)
     doctor.set_defaults(handler=cmd_doctor)
+
+    evaluate = sub.add_parser("eval", help="score accuracy against a gold set")
+    evaluate.add_argument("--goldset", required=True, help="path to a JSONL or JSON gold set")
+    evaluate.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    evaluate.add_argument(
+        "--allow-synthetic",
+        action="store_true",
+        help="exercise the harness on synthetic data (results are NOT an accuracy claim)",
+    )
+    evaluate.add_argument("--max-hallucination-rate", type=float, default=0.0)
+    evaluate.add_argument("--min-citation-coverage", type=float, default=1.0)
+    evaluate.add_argument("--min-accuracy", type=float, default=0.0)
+    evaluate.set_defaults(handler=cmd_eval)
 
     providers = sub.add_parser("providers", help="inspect and test the commercial providers")
     providers.add_argument("--profile-dir", help="directory of JSON profile overrides")

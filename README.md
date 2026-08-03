@@ -47,6 +47,8 @@ goes near a vehicle.
 | `aad check [--live]` | run exactly what CI runs: ruff, then pytest |
 | `aad doctor` | live-check NHTSA reachability and report which providers are configured |
 | `aad verify-index [--production]` | report whether the indexed corpus is fit to serve |
+| `aad providers list\|show\|test` | inspect and live-test the commercial provider profiles |
+| `aad eval --goldset PATH` | score accuracy, precision and hallucination rate |
 
 `aad check` exists so a red PR is reproducible locally with one command. `doctor` and
 `verify-index` answer a different question from the test suite: tests tell you the code
@@ -113,6 +115,65 @@ lookup response carries `provider_verified` so the state travels with the data.
 Credentials are read from the environment (or `.env`, which is gitignored) and never
 written to the repo. They are redacted from provider error messages, because those
 messages reach both the model and HTTP callers.
+
+## Accuracy evaluation
+
+The headline number for this system is not accuracy — it is the **hallucination rate**.
+A system that abstains on half its questions and is never wrong is usable in a bay; one
+that answers everything and is wrong 3% of the time is not, because the technician cannot
+tell which 3%.
+
+So every gold case scores into one of four outcomes:
+
+| Outcome | Meaning |
+|---|---|
+| `correct` | answered, and the value matches the gold value |
+| `wrong` | answered, and it does not — **the gate metric** |
+| `abstained` | correctly reported the data as unavailable |
+| `missed` | abstained when the answer was in the corpus (safe, unhelpful) |
+
+```bash
+aad eval --goldset path/to/goldset.jsonl
+```
+
+A gold case is a question with a known answer drawn from your licensed corpus. Cases with
+`"must_abstain": true` are the important ones — they name a vehicle or component the
+corpus does *not* cover, so any returned specification is a hallucination:
+
+```json
+{"id": "g35-cmp-bolt", "kind": "torque_spec",
+ "vehicle": {"year": 2004, "make": "INFINITI", "model": "G35", "engine": "3.5L V6"},
+ "query": "camshaft position sensor retaining bolt",
+ "expected_value": 9, "expected_unit": "Nm", "expected_source": "nissan_g35_engine.pdf"}
+{"id": "g35-absent", "kind": "torque_spec",
+ "vehicle": {"year": 2004, "make": "INFINITI", "model": "G35"},
+ "query": "transfer case output shaft nut", "must_abstain": true}
+```
+
+`kind` is `torque_spec`, `labor_time` or `retrieval`. Gold values may be given in any
+torque unit — comparison converts, though nothing the technician sees is ever silently
+converted. Gates default to **zero tolerated hallucinations** and **100% citation
+coverage**; `--min-accuracy` is available but off by default, because a miss is a
+different kind of problem from a wrong answer.
+
+**Evaluation refuses to run over synthetic material.** An accuracy figure measured
+against invented specifications reads as evidence while meaning nothing. `--allow-synthetic`
+exercises the harness itself on the sample corpus and labels the output as not an accuracy
+result.
+
+### What the harness caught on its first run
+
+A torque query for a component the corpus does not cover — *transfer case output shaft
+nut* on a vehicle that **is** indexed — returned **40 Nm, the cylinder head bolt value**,
+with a citation attached. Retrieval returns the closest chunks for the vehicle whether or
+not the component appears in them, and extraction pulled any torque value out of them,
+ranked by relevance but never gated on it.
+
+Extraction is now gated: a value is only offered as a component's spec when the sentence,
+or the section heading above it, actually names that component. Two follow-on bugs fell
+out of fixing it — substring matching equated `shaft` with `camshaft`, and splitting
+sentences on `:` stranded values like `bank 1: 0.7 hrs` in a fragment naming nothing.
+`tests/test_evaluation.py` keeps all three caught.
 
 ## Production readiness
 
@@ -340,9 +401,10 @@ Being blunt about this, because the failure mode is expensive:
    lookups all report a gap until a shop wires in its own subscription, and each adapter's
    request/response mapping will need adjusting to that vendor's actual contract.
 3. **The live NHTSA integration is unverified** until CI's live job passes.
-4. **No accuracy evaluation has been run.** The grounding *mechanisms* are tested; the
-   end-to-end accuracy of retrieval and extraction against real manuals is not, and
-   cannot be until (1) is resolved.
+4. **No accuracy evaluation has been run against real manuals.** The harness exists
+   (`aad eval`) and has already earned its keep by catching a live hallucination path,
+   but it can only self-test on synthetic data. A real accuracy figure needs (1)
+   resolved first, and the harness refuses to produce one before then.
 
 The system is a technician's reference, not an authority. Nothing here removes the
 technician's obligation to verify a specification against the OEM source before the

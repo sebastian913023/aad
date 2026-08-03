@@ -57,32 +57,86 @@ def _bolt_size(text: str) -> str | None:
 
 
 def _sentences(text: str) -> list[str]:
-    return [s.strip() for s in re.split(r"(?<=[.;:])\s+|\n+", text) if s.strip()]
+    # Deliberately not splitting on ':' — service manuals label values with it
+    # ("Stage 1: 40 Nm", "Bank 1: 0.7 hrs"), and splitting there strands the number
+    # in a fragment with nothing identifying it.
+    return [s.strip() for s in re.split(r"(?<=[.;])\s+|\n+", text) if s.strip()]
 
 
-def extract_torque_specs(text: str, component: str) -> list[dict]:
+# Words that carry no identifying information about *which* fastener is meant.
+# A sentence matching only these is not evidence that it describes the requested
+# component — every torque spec in the manual contains them.
+_STOPWORDS = frozenset(
+    {"the", "and", "for", "with", "from", "into", "out", "all", "any", "its", "each", "per"}
+)
+_GENERIC_FASTENER = frozenset(
+    {
+        "bolt", "bolts", "nut", "nuts", "screw", "screws", "stud", "studs",
+        "fastener", "fasteners", "torque", "spec", "specs", "specification",
+        "specifications", "tighten", "tightening", "value", "values",
+    }
+)
+
+
+def _words(text: str) -> set[str]:
+    """Whole words of 3+ characters, lowercased, with trailing plurals folded.
+
+    Queries say "cylinder head bolts"; manuals say "bolt". Folding the plural avoids
+    a miss on a spec that is plainly present — a miss is safe but useless, and there
+    is no safety cost to matching singular against plural.
+    """
+    words = set(re.findall(r"[a-z]{3,}", text.lower()))
+    return {w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w for w in words}
+
+
+def _terms(component: str) -> tuple[set[str], set[str]]:
+    """Split a component name into (distinctive, generic) term sets."""
+    words = _words(component) - _STOPWORDS
+    return words - _GENERIC_FASTENER, words & _GENERIC_FASTENER
+
+
+def extract_torque_specs(text: str, component: str, section: str | None = None) -> list[dict]:
     """Pull candidate torque values out of retrieved text, keeping the exact sentence.
 
-    Sentences mentioning the requested component rank first; the raw snippet always
-    accompanies the number so a tech can verify it against the source page.
+    A value is only offered as *this component's* spec when the sentence — or the
+    section heading it sits under — actually names the component. Retrieval returns
+    the closest chunks for the vehicle whether or not the component appears in them,
+    so without this gate a component absent from the corpus picks up the nearest
+    unrelated torque value and presents it with a citation.
+
+    The gate trades misses for wrong answers deliberately. A miss is reported as an
+    explicit gap; a wrong answer is a failed fastener.
     """
-    terms = [t for t in re.findall(r"[a-z]{3,}", component.lower())]
+    distinctive, generic = _terms(component)
+    # Whole words only. Substring matching silently equates "shaft" with "camshaft",
+    # which is how a transfer-case query picks up a camshaft sensor's torque value.
+    heading_words = _words(section or "")
+
     found: list[dict] = []
     for sentence in _sentences(text):
+        sentence_words = _words(sentence)
+        # The section heading counts as context: manuals routinely put the component
+        # in a heading and the value in a bare table row beneath it.
+        matched_distinctive = distinctive & (sentence_words | heading_words)
+        matched_generic = generic & sentence_words
+
+        if distinctive and not matched_distinctive:
+            continue
+        if not distinctive and not matched_generic:
+            continue
+
         for match in _VALUE_RE.finditer(sentence):
             low = float(match.group("low"))
             high = match.group("high")
-            unit = _normalize_unit(match.group("unit"))
-            relevance = sum(1 for term in terms if term in sentence.lower())
             found.append(
                 {
                     "value": low,
                     "value_high": float(high) if high else None,
-                    "unit": unit,
+                    "unit": _normalize_unit(match.group("unit")),
                     "bolt_size": _bolt_size(sentence),
                     "sequence": (m.group(0) if (m := _SEQUENCE_RE.search(sentence)) else None),
                     "snippet": sentence,
-                    "relevance": relevance,
+                    "relevance": len(matched_distinctive) * 2 + len(matched_generic),
                 }
             )
     found.sort(key=lambda item: (-item["relevance"], item["snippet"]))
@@ -147,7 +201,7 @@ def lookup_torque_spec(
     specs: list[dict] = []
     for hit in hits:
         citation = hit.citation().model_dump()
-        for candidate in extract_torque_specs(hit.chunk.text, component)[:3]:
+        for candidate in extract_torque_specs(hit.chunk.text, component, hit.chunk.section)[:3]:
             specs.append(
                 {
                     "component": component,

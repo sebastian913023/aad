@@ -24,11 +24,54 @@ _HOURS_RE = re.compile(
 )
 _WARRANTY_RE = re.compile(r"\bwarranty\b", re.IGNORECASE)
 
+# Words shared by every labor entry, so a match on them alone identifies nothing.
+_GENERIC_OPERATION = frozenset(
+    {
+        "labor", "time", "times", "hours", "hrs", "operation", "operations",
+        "replace", "replacement", "remove", "removal", "install", "installation",
+        "service", "repair", "the", "and", "for", "with", "from",
+    }
+)
 
-def extract_labor_times(text: str, operation: str) -> list[dict]:
-    terms = re.findall(r"[a-z]{3,}", operation.lower())
+
+def _words(text: str) -> set[str]:
+    """Whole words of 3+ characters, with trailing plurals folded.
+
+    Substring matching would equate 'shaft' with 'camshaft' and hand back an
+    unrelated operation's hours, so matching is on whole words only.
+    """
+    words = set(re.findall(r"[a-z]{3,}", text.lower()))
+    return {w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w for w in words}
+
+
+def _operation_terms(operation: str) -> tuple[set[str], set[str]]:
+    words = _words(operation)
+    return words - _GENERIC_OPERATION, words & _GENERIC_OPERATION
+
+
+def extract_labor_times(text: str, operation: str, section: str | None = None) -> list[dict]:
+    """Extract published hours, gated on the operation actually being named.
+
+    Same reasoning as the torque extractor: retrieval returns the closest chunks for
+    the vehicle, so without this gate an operation absent from the guide picks up an
+    unrelated time and it lands on a customer's estimate.
+    """
+    distinctive, generic = _operation_terms(operation)
+    heading_words = _words(section or "")
+
     found: list[dict] = []
-    for sentence in (s.strip() for s in re.split(r"(?<=[.;:])\s+|\n+", text) if s.strip()):
+    # Not splitting on ':' — "bank 1: 0.7 hrs" must stay attached to the operation
+    # that labels it, or the hours land in a fragment identifying nothing.
+    for sentence in (s.strip() for s in re.split(r"(?<=[.;])\s+|\n+", text) if s.strip()):
+        sentence_words = _words(sentence)
+        matched_distinctive = distinctive & (sentence_words | heading_words)
+        matched_generic = generic & sentence_words
+
+        if distinctive and not matched_distinctive:
+            continue
+        if not distinctive and not matched_generic:
+            continue
+
         for match in _HOURS_RE.finditer(sentence):
             hours = float(match.group("hours"))
             if hours <= 0 or hours > 60:  # Guard against page numbers and part numbers.
@@ -38,7 +81,7 @@ def extract_labor_times(text: str, operation: str) -> list[dict]:
                     "hours": hours,
                     "is_warranty_time": bool(_WARRANTY_RE.search(sentence)),
                     "snippet": sentence,
-                    "relevance": sum(1 for term in terms if term in sentence.lower()),
+                    "relevance": len(matched_distinctive) * 2 + len(matched_generic),
                 }
             )
     found.sort(key=lambda item: (-item["relevance"], item["hours"]))
@@ -99,7 +142,7 @@ def lookup_labor_time(
     entries: list[dict] = []
     for hit in hits:
         citation = hit.citation().model_dump()
-        for candidate in extract_labor_times(hit.chunk.text, operation)[:3]:
+        for candidate in extract_labor_times(hit.chunk.text, operation, hit.chunk.section)[:3]:
             entries.append(
                 {
                     "operation": operation,
