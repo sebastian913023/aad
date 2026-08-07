@@ -88,6 +88,20 @@ class Settings(BaseSettings):
     # demo data physically cannot reach a bay.
     production_mode: bool = False
 
+    # --- Hallucination monitoring -----------------------------------------
+    monitor_db: Path = REPO_ROOT / "data" / "monitor.sqlite3"
+    # Below this mean semantic consistency an output is routed to human review even
+    # when every literal value checks out — agreement on numbers is not agreement on
+    # meaning.
+    #
+    # Calibrated for the offline hash embedder, which measures lexical overlap and
+    # scores a terse sentence ("torque it to 9 Nm") low however well the source
+    # supports it. Raise it toward ~0.5 when `embedding_backend` is a real model.
+    # It is not the fabrication gate — that is lexical grounding, which is absolute.
+    monitor_min_semantic: float = 0.15
+    monitor_enabled: bool = True
+    judge_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+
     # --- Live provider tests ---------------------------------------------
     # Opt-in so the default test run needs no network. CI sets it to exercise
     # NHTSA against the real service.

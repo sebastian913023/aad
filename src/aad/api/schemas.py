@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from aad.models import SpecType, Vehicle
@@ -60,3 +62,33 @@ class EstimateRequest(VehicleScoped):
     part_items: list[dict] = Field(default_factory=list)
     fees: list[dict] = Field(default_factory=list)
     labor_rate: float | None = None
+
+
+class VerifyRequest(BaseModel):
+    """Verify an arbitrary output against the sources it claims to rest on.
+
+    Exposed so outputs produced outside this system — another model, a copied answer,
+    a draft write-up — can be run through the same grounding check.
+    """
+
+    output: str
+    sources: dict[str, str] = Field(
+        default_factory=dict, description="Source id -> full source text, as supplied to the model."
+    )
+    question: str = ""
+    cited_ids: list[str] | None = Field(
+        default=None, description="Ids the output cited. Defaults to every supplied source."
+    )
+    task_type: str = "general"
+    use_judge: bool = Field(
+        default=False, description="Also run the judge model. Needs API credentials."
+    )
+    record: bool = True
+
+
+class ReviewRequest(BaseModel):
+    """A human closing out a flagged output."""
+
+    reviewer: str
+    outcome: Literal["confirmed", "corrected", "rejected"]
+    note: str = ""

@@ -4,6 +4,9 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # Lets a run be triggered by hand from the Actions tab or the API, which is the
+  # first thing you'll want after enabling Actions on the repository.
+  workflow_dispatch:
   schedule:
     # Catch upstream drift in the live provider APIs even when nobody pushes.
     - cron: "17 6 * * 1"
@@ -52,6 +55,29 @@ jobs:
         # the extraction relevance gate that stops an absent component picking up an
         # unrelated torque value.
         run: aad eval --goldset data/eval/sample_goldset.jsonl --allow-synthetic
+
+      - name: Grounding monitor catches a planted fabrication
+        # End-to-end proof the zero-tolerance gate is live: a value that is not in the
+        # source must exit non-zero. If this step ever passes, the monitor is broken
+        # and no other green check means anything.
+        run: |
+          mkdir -p /tmp/monitor-check
+          printf 'Tighten the camshaft position sensor bolt to 9 N·m (80 in-lb).\n' \
+            > /tmp/monitor-check/source.txt
+          printf 'Torque the camshaft position sensor bolt to 47 N·m.\n' \
+            > /tmp/monitor-check/fabricated.txt
+          printf 'Torque the camshaft position sensor bolt to 9 N·m.\n' \
+            > /tmp/monitor-check/grounded.txt
+          if aad monitor verify --output /tmp/monitor-check/fabricated.txt \
+               --source manual#c1=/tmp/monitor-check/source.txt \
+               --question "cam sensor bolt torque" --task-type torque_spec; then
+            echo "::error::the monitor passed a fabricated torque value"
+            exit 1
+          fi
+          aad monitor verify --output /tmp/monitor-check/grounded.txt \
+            --source manual#c1=/tmp/monitor-check/source.txt \
+            --question "cam sensor bolt torque" --task-type torque_spec
+          echo "monitor blocks fabrications and passes grounded values"
 
       - name: Index readiness gate
         # Must report NOT ready: the sample corpus is synthetic. If this ever

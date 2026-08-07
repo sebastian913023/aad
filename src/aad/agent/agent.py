@@ -39,9 +39,14 @@ class DiagnosticResult:
     stop_reason: str | None = None
     usage: dict = field(default_factory=dict)
     messages: list[dict] = field(default_factory=list)
+    monitor: dict | None = None
+    monitor_event_id: str | None = None
+    # The model's text before the monitor acted on it. Kept for the reviewer, not the
+    # technician: when an answer is withheld, someone has to see what was withheld.
+    unverified_answer: str | None = None
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "answer": self.answer,
             "vehicle": self.vehicle.model_dump(exclude_none=True),
             "citations": self.citations,
@@ -52,6 +57,12 @@ class DiagnosticResult:
             "stop_reason": self.stop_reason,
             "usage": self.usage,
         }
+        if self.monitor is not None:
+            payload["monitor"] = self.monitor
+            payload["monitor_event_id"] = self.monitor_event_id
+        if self.unverified_answer is not None:
+            payload["unverified_answer"] = self.unverified_answer
+        return payload
 
 
 def _collect_citations(payload: Any, sink: list[dict], seen: set[str]) -> None:
@@ -69,6 +80,27 @@ def _collect_citations(payload: Any, sink: list[dict], seen: set[str]) -> None:
     elif isinstance(payload, list):
         for item in payload:
             _collect_citations(item, sink, seen)
+
+
+_BLOCKED_NOTICE = (
+    "**Answer withheld.** The verification pass found {n} specification value(s) in this "
+    "response that do not appear in any document the response cited: {values}. An "
+    "unverifiable number is more dangerous than a missing one, so it is not being shown. "
+    "This has been queued for human review{ref}. Consult the OEM service information for "
+    "these values."
+)
+
+_REVIEW_BANNER = {
+    "abstained": (
+        "> ⚠️ **Held for human review** ({reason}). The values below were checked against "
+        "their cited sources, but the verification pass was not satisfied. Confirm against "
+        "the OEM service information before acting on them."
+    ),
+    "escalated": (
+        "> ⚠️ **Flagged for human review** ({reason}). Some part of this answer could not be "
+        "fully confirmed against its citations. Verify before acting on it."
+    ),
+}
 
 
 class DiagnosticAgent:
@@ -99,6 +131,65 @@ class DiagnosticAgent:
             tools=TOOL_SCHEMAS,
             messages=messages,
         )
+
+    def _verify(self, result: DiagnosticResult, question: str) -> DiagnosticResult:
+        """Run the grounding monitor over a finished answer and act on its verdict.
+
+        Imported lazily: the judge model lives in `aad.monitor` and itself imports the
+        agent's client, so a module-level import here would be a cycle.
+        """
+        if not self.settings.monitor_enabled or not result.answer:
+            return result
+
+        from aad.monitor.harvest import infer_task_type, sources_from_tool_results
+        from aad.monitor.pipeline import monitor_output
+        from aad.monitor.store import get_monitor_store
+
+        sources = sources_from_tool_results(
+            [call.result for call in result.tool_calls if not call.is_error]
+        )
+        cited = [c["chunk_id"] for c in result.citations if c.get("chunk_id")]
+        task_type = infer_task_type([call.name for call in result.tool_calls])
+
+        monitored = monitor_output(
+            question=question,
+            output=result.answer,
+            sources=sources,
+            # Fall back to everything retrieved when the answer carried no explicit
+            # citation set — the generous reading, so a block is never an artefact of
+            # citation bookkeeping.
+            cited_ids=cited or None,
+            task_type=task_type,
+            settings=self.settings,
+        )
+        result.monitor = monitored.to_dict()
+
+        try:
+            result.monitor_event_id = get_monitor_store(self.settings.monitor_db).record(
+                monitored,
+                question=question,
+                output=result.answer,
+                vehicle=result.vehicle.label(),
+            )
+        except Exception as exc:  # noqa: BLE001 - a logging failure must not gate the answer
+            result.monitor["notes"] = [*result.monitor.get("notes", []), f"not recorded: {exc}"]
+
+        ref = f" (reference {result.monitor_event_id})" if result.monitor_event_id else ""
+        if monitored.verdict == "blocked":
+            result.unverified_answer = result.answer
+            result.answer = _BLOCKED_NOTICE.format(
+                n=len(monitored.fabrications),
+                values=", ".join(
+                    f"{c.claim.value}{c.claim.unit or ''}" for c in monitored.fabrications
+                ),
+                ref=ref,
+            )
+        elif monitored.verdict in _REVIEW_BANNER:
+            banner = _REVIEW_BANNER[monitored.verdict].format(
+                reason=(monitored.abstention_reason or "unconfirmed").replace("_", " ")
+            )
+            result.answer = f"{banner}\n\n{result.answer}"
+        return result
 
     def run(
         self,
@@ -159,7 +250,7 @@ class DiagnosticAgent:
                     )
                 result.messages = messages
                 result.vehicle = ctx.vehicle
-                return result
+                return self._verify(result, question)
 
             tool_results = []
             for block in tool_uses:

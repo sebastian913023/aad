@@ -5,6 +5,7 @@
     aad check                     run the test suite and linter
     aad doctor                    live-check every configured provider
     aad verify-index              report whether the corpus is fit to serve
+    aad monitor ...               grounding metrics, dashboard, human-review queue
 
 `doctor` and `verify-index` exist because "the tests pass" and "this is safe to put
 in front of a technician" are different questions. The first is about code; the
@@ -465,6 +466,183 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --- monitor --------------------------------------------------------------
+
+
+def _monitor_store():
+    from aad.monitor.store import get_monitor_store
+
+    return get_monitor_store()
+
+
+def cmd_monitor_summary(args: argparse.Namespace) -> int:
+    import json as _json
+    import time as _time
+
+    store = _monitor_store()
+    since = _time.time() - args.since_hours * 3600 if args.since_hours else None
+    summary = store.summary(since=since)
+    by_task = store.by_task_type(since=since)
+    reasons = store.abstention_reasons(since=since)
+
+    if args.json:
+        print(
+            _json.dumps(
+                {"summary": summary, "by_task_type": by_task, "abstention_reasons": reasons},
+                indent=2,
+            )
+        )
+        return EXIT_OK
+
+    def pct(value: float | None) -> str:
+        return "n/a" if value is None else f"{value * 100:.1f}%"
+
+    if not summary["events"]:
+        print("no monitored outputs recorded yet")
+        print(f"(store: {store.path})")
+        return EXIT_OK
+
+    print(f"monitored outputs:   {summary['events']}  (claim-bearing: {summary['claim_events']})")
+    print(f"hallucination rate:  {pct(summary['hallucination_rate'])}")
+    print(f"grounding rate:      {pct(summary['grounding_rate'])}")
+    print(f"abstention rate:     {pct(summary['abstention_rate'])}")
+    print(f"fabricated claims:   {summary['fabrications']} of {summary['claims']}")
+    print(f"mean faithfulness:   {summary['mean_faithfulness']}")
+    print(f"citation accuracy:   {summary['mean_citation_accuracy']}")
+    print(f"semantic consistency: {summary['mean_semantic_consistency']}")
+    print(f"awaiting review:     {summary['pending_review']}")
+
+    if by_task:
+        print("\nby task type:")
+        for row in by_task:
+            print(
+                f"  {row['task_type']:<16} events={row['events']:<5} "
+                f"grounded={pct(row['grounding_rate']):<7} "
+                f"abstained={pct(row['abstention_rate']):<7} "
+                f"hallucinated={pct(row['hallucination_rate'])}"
+            )
+    if reasons:
+        print("\nabstention triggers:")
+        for name, count in reasons.items():
+            print(f"  {name:<26} {count}")
+
+    # A non-zero hallucination rate is a build-breaking condition, not a statistic.
+    if summary["hallucination_rate"]:
+        print("\nHALLUCINATIONS RECORDED — see `aad monitor queue`", file=sys.stderr)
+        return EXIT_FAIL
+    return EXIT_OK
+
+
+def cmd_monitor_dashboard(args: argparse.Namespace) -> int:
+    from aad.monitor.dashboard import dashboard_json, render_from_store
+
+    store = _monitor_store()
+    if args.json:
+        payload = dashboard_json(store)
+        if args.out:
+            Path(args.out).write_text(payload, encoding="utf-8")
+            print(f"wrote {args.out}")
+        else:
+            print(payload)
+        return EXIT_OK
+
+    html = render_from_store(store)
+    out = Path(args.out or "monitor-dashboard.html")
+    out.write_text(html, encoding="utf-8")
+    print(f"wrote {out} ({len(html)} bytes) — open it in a browser, no server needed")
+    return EXIT_OK
+
+
+def cmd_monitor_queue(args: argparse.Namespace) -> int:
+    queue = _monitor_store().review_queue(limit=args.limit)
+    if not queue:
+        print("review queue is empty")
+        return EXIT_OK
+    for event in queue:
+        reason = event["abstention_reason"] or "unconfirmed"
+        print(f"{event['id']}  {event['verdict']:<10} {event['task_type']:<14} {reason}")
+        print(f"    vehicle:  {event['vehicle'] or '-'}")
+        print(f"    question: {(event['question'] or '')[:100]}")
+        for claim in event["payload"].get("claims", []):
+            if claim.get("fabricated"):
+                print(f"    FABRICATED: {claim.get('value')}{claim.get('unit') or ''} "
+                      f"({claim.get('type')})")
+    print(f"\n{len(queue)} output(s) awaiting review")
+    return EXIT_OK
+
+
+def cmd_monitor_resolve(args: argparse.Namespace) -> int:
+    ok = _monitor_store().resolve(
+        args.event_id, reviewer=args.reviewer, outcome=args.outcome, note=args.note
+    )
+    if not ok:
+        print(f"no monitor event {args.event_id!r}", file=sys.stderr)
+        return EXIT_FAIL
+    print(f"{args.event_id} resolved as {args.outcome} by {args.reviewer}")
+    return EXIT_OK
+
+
+def cmd_monitor_verify(args: argparse.Namespace) -> int:
+    """Verify a written-down output against source files on disk.
+
+    Useful outside the agent loop: paste any answer and the documents it claims to
+    rest on, and get the same zero-tolerance verdict the live path applies.
+    """
+    import json as _json
+
+    from aad.monitor.pipeline import monitor_output
+
+    sources: dict[str, str] = {}
+    for spec in args.source:
+        source_id, _, path = spec.partition("=")
+        if not path:
+            source_id, path = Path(spec).name, spec
+        try:
+            sources[source_id] = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"could not read source {path!r}: {exc}", file=sys.stderr)
+            return EXIT_FAIL
+
+    try:
+        output = Path(args.output).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"could not read output {args.output!r}: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+
+    result = monitor_output(
+        question=args.question,
+        output=output,
+        sources=sources,
+        task_type=args.task_type,
+        use_judge=args.judge,
+        settings=get_settings(),
+    )
+    if args.record:
+        event_id = _monitor_store().record(result, question=args.question, output=output)
+        print(f"recorded as {event_id}", file=sys.stderr)
+
+    if args.json:
+        print(_json.dumps(result.to_dict(), indent=2))
+    else:
+        print(f"verdict:            {result.verdict}")
+        print(f"claims checked:     {len(result.claims)}")
+        print(f"faithfulness:       {result.faithfulness:.2f}")
+        print(f"citation accuracy:  {result.citation_accuracy:.2f}")
+        print(f"semantic consistency: {result.mean_semantic:.2f}")
+        if result.abstention_reason:
+            print(f"abstention trigger: {result.abstention_reason}")
+        for note in result.notes:
+            print(f"  note: {note}")
+        for report in result.claims:
+            mark = "FABRICATED" if report.fabricated else "grounded  "
+            print(
+                f"  [{mark}] {report.claim.claim_type}: "
+                f"{report.claim.value}{report.claim.unit or ''} — {report.score.detail}"
+            )
+
+    return EXIT_FAIL if result.verdict in {"blocked", "escalated"} else EXIT_OK
+
+
 # --- serve / check --------------------------------------------------------
 
 
@@ -585,6 +763,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="exit non-zero unless the corpus is production-ready",
     )
     verify.set_defaults(handler=cmd_verify_index)
+
+    monitor = sub.add_parser("monitor", help="grounding monitor: metrics, dashboard, review queue")
+    msub = monitor.add_subparsers(dest="monitor_command", required=True)
+
+    msummary = msub.add_parser("summary", help="headline grounding metrics (non-zero exit if any "
+                                              "hallucination was recorded)")
+    msummary.add_argument("--since-hours", type=float, default=None)
+    msummary.add_argument("--json", action="store_true")
+    msummary.set_defaults(handler=cmd_monitor_summary)
+
+    mdash = msub.add_parser("dashboard", help="write the self-contained HTML dashboard")
+    mdash.add_argument("--out", default=None, help="output path (default monitor-dashboard.html)")
+    mdash.add_argument("--json", action="store_true", help="emit the underlying data instead")
+    mdash.set_defaults(handler=cmd_monitor_dashboard)
+
+    mqueue = msub.add_parser("queue", help="outputs awaiting human review")
+    mqueue.add_argument("--limit", type=int, default=25)
+    mqueue.set_defaults(handler=cmd_monitor_queue)
+
+    mresolve = msub.add_parser("resolve", help="close out one review")
+    mresolve.add_argument("event_id")
+    mresolve.add_argument("--reviewer", required=True)
+    mresolve.add_argument(
+        "--outcome", required=True, choices=["confirmed", "corrected", "rejected"]
+    )
+    mresolve.add_argument("--note", default="")
+    mresolve.set_defaults(handler=cmd_monitor_resolve)
+
+    mverify = msub.add_parser("verify", help="verify a written output against source files")
+    mverify.add_argument("--output", required=True, help="file holding the output to verify")
+    mverify.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        metavar="[ID=]PATH",
+        help="a source the output cited; repeatable",
+    )
+    mverify.add_argument("--question", default="")
+    mverify.add_argument("--task-type", default="general")
+    mverify.add_argument("--judge", action="store_true", help="also run the judge model")
+    mverify.add_argument("--record", action="store_true", help="log the result to the monitor db")
+    mverify.add_argument("--json", action="store_true")
+    mverify.set_defaults(handler=cmd_monitor_verify)
 
     return parser
 

@@ -9,3 +9,5 @@ build/
 *.egg-info/
 data/index/
 data/offline_cache.sqlite3
+data/monitor.sqlite3
+monitor-dashboard.html

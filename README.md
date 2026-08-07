@@ -225,9 +225,111 @@ with the reason intact.
 **No invented commercial data.** Part numbers, prices, and live scan data require a
 configured supplier or scan-service account. Unconfigured, those tools say so.
 
+**Output verification.** Every finished answer is re-checked against the documents it
+actually retrieved, before it reaches a technician. See the next section.
+
 The system prompt is deliberately narrow about what is restricted: published values.
 Diagnostic *reasoning* — how a system works, what a symptom implies, what to test next —
 is expertise the model should give freely, and it is told so.
+
+## Grounding monitor (zero tolerance)
+
+Everything above constrains what the model is *given*. The monitor checks what it
+*produced*. It runs on every answer from `/api/v1/diagnose`, and can be pointed at any
+other text via `aad monitor verify` or `POST /api/v1/monitor/verify`.
+
+### How a claim is judged
+
+The output is decomposed into **atomic claims** — torque values, labor hours, part
+numbers, wire colours, pin numbers, bolt sizes — and each is scored independently
+against the sources that answer cited. Scoring whole responses cannot enforce zero
+tolerance: one fabricated value inside four correct paragraphs averages out to a good
+score.
+
+Three signals per claim, reported separately (**LSC**):
+
+| | | |
+|---|---|---|
+| **L** | lexical grounding | the claim's literal value appears in a cited source |
+| **S** | semantic consistency | the claim and its best-matching source passage agree |
+| **C** | citation validity | the citation names a source that was actually supplied |
+
+`LSC` is this system's own composite, defined in `src/aad/monitor/lsc.py`. It is not a
+published standard metric. The composite (`0.5L + 0.3S + 0.2C`) is reported for trend
+watching only — **the gate is L**, and L is binary. A torque value that does not appear
+verbatim in a cited source is a fabrication however plausible the sentence around it
+reads. Unit spellings are normalised (`N·m` grounds `Nm`) but values are never
+converted: 9 Nm does not ground a claim of "6.6 lb-ft", because a converted number is
+not a published number.
+
+### The order of operations
+
+1. Extract claims.
+2. Score each against its cited sources (deterministic, always runs, no model call).
+3. No sources reached the monitor at all → **abstain**. An unverifiable claim is not a
+   proven fabrication, and our own plumbing failures must not land in the hallucination
+   rate.
+4. Any claim with `L == 0` → **blocked**. The answer is withheld and replaced by a
+   notice naming the values that could not be verified; the original text is kept in
+   `unverified_answer` for the reviewer.
+5. Judge model (optional, `use_judge`) — a second Claude call that reads the output and
+   the sources. **It can only tighten the outcome.** It may raise an abstention; it can
+   never clear a fabrication the lexical check already found. A soft judge able to
+   overturn a hard lexical failure would turn a deterministic guarantee back into a
+   probabilistic one. A judge that fails to run returns `supported=False,
+   insufficient_context=True`, so an unavailable judge routes to review rather than
+   reading as approval.
+6. Route: `grounded` / `abstained` / `escalated` / `blocked` / `no_claims`.
+
+### Abstention triggers
+
+An output goes to human review when any of these fire:
+
+- **insufficient_context** — no sources supplied, or the judge says the sources do not
+  contain enough to answer.
+- **rubric_conflict** — the output asserts a value *and* declares it unavailable, or the
+  judge finds cited sources disagreeing with each other.
+- **low_semantic_consistency** — mean S below `AAD_MONITOR_MIN_SEMANTIC`.
+- **fabrication** — the zero-tolerance block.
+
+Escalation (answer kept, review flagged) additionally fires when citation accuracy is
+below 1.0, or when the judge cannot confirm support for every claim.
+
+The default semantic floor (0.15) is calibrated for the offline hash embedder, which
+measures lexical overlap and scores a terse sentence low however well the source
+supports it. Raise it toward ~0.5 when `AAD_EMBEDDING_BACKEND=openai`. It is not the
+fabrication gate — L is.
+
+### Dashboard
+
+```bash
+.venv/bin/aad monitor summary        # headline metrics; exits 1 if any hallucination recorded
+.venv/bin/aad monitor dashboard      # self-contained HTML, no server and no network
+.venv/bin/aad monitor queue          # outputs awaiting human review
+.venv/bin/aad monitor resolve <id> --reviewer you --outcome confirmed|corrected|rejected
+.venv/bin/aad serve                  # then open /monitor
+```
+
+The dashboard shows faithfulness, citation accuracy and semantic consistency; the
+verdict mix; abstention-versus-grounding rates broken out **by task type** (torque_spec,
+labor_time, wiring, dtc, tsb, parts, estimate, obd2_scan, manual_search, vin_decode);
+which abstention trigger fired how often; daily activity; and every fabrication caught,
+with the offending value and the sentence it appeared in.
+
+Rates over an empty denominator render as `—`, never `0%`. A 0% hallucination rate over
+zero samples is not a safety claim, and showing it as one is how people come to trust an
+untested system. The hallucination rate's denominator is claim-bearing outputs only —
+counting answers that asserted nothing would dilute the rate toward zero exactly when
+the system starts answering less.
+
+Every verification is logged to SQLite (`AAD_MONITOR_DB`, default
+`data/monitor.sqlite3`), one row per answer, with the per-claim evidence. That log is
+the audit trail: for any answer a technician acted on, it shows what was claimed, what
+was cited, whether the value was found, and who signed it off. Resolution never rewrites
+the original verdict.
+
+Set `AAD_MONITOR_ENABLED=false` to switch the monitor off. There is no good reason to do
+that in a bay.
 
 ## Architecture
 
@@ -258,6 +360,7 @@ request ──► DiagnosticAgent (Claude Opus 5)
 | `aad/api/` | FastAPI surface, one endpoint per tool plus `/diagnose` |
 | `aad/cache/` | SQLite offline cache with stale-fallback |
 | `aad/estimates.py` | estimate arithmetic |
+| `aad/monitor/` | zero-tolerance grounding monitor: claim extraction, LSC scoring, judge, pipeline, SQLite event store, dashboard |
 
 ### Model configuration
 
@@ -306,6 +409,12 @@ account and no network, which the offline-first requirement demands anyway.
 | `POST /api/v1/parts/search` | Supplier catalog |
 | `POST /api/v1/estimates` | Estimate assembly from supplied figures |
 | `GET /api/v1/index/stats` | What is indexed, and cache contents |
+| `POST /api/v1/monitor/verify` | Grounding-check an arbitrary output against supplied sources |
+| `GET /api/v1/monitor/summary` | Hallucination/grounding/abstention rates, overall and by task type |
+| `GET /api/v1/monitor/events` | Recent monitor events (filterable by task type, verdict) |
+| `GET /api/v1/monitor/review-queue` | Outputs currently awaiting human review |
+| `POST /api/v1/monitor/events/{id}/review` | Close out a human review |
+| `GET /monitor` | The dashboard, rendered as HTML |
 
 Status codes carry meaning: **422** the request had no vehicle identity, **404** nothing
 indexed matches, **501** the provider is not configured, **502** the upstream provider
@@ -336,9 +445,11 @@ sidecar is the better path for a mixed directory:
 
 ## Tests and CI
 
-73 hermetic tests, no network and no API key required. The agent loop is tested against a
+164 hermetic tests, no network and no API key required. The agent loop is tested against a
 scripted client, so tool dispatch, citation harvesting, refusal handling, and the turn
-budget are all covered without calling the API.
+budget are all covered without calling the API. The monitor is tested the same way — the
+load-bearing case plants a plausible, well-cited, confidently-worded torque value that is
+simply not in the source, and asserts it gets blocked.
 
 ```bash
 .venv/bin/aad check           # ruff + pytest, the same gates CI runs
@@ -347,8 +458,9 @@ budget are all covered without calling the API.
 
 CI (`.github/workflows/ci.yml`) runs on every push and PR, as two jobs:
 
-- **tests + lint** — ruff, pytest, an ingestion smoke test, and the readiness-gate
-  assertion described above.
+- **tests + lint** — ruff, pytest, an ingestion smoke test, a step that plants a
+  fabricated torque value and asserts `aad monitor verify` exits non-zero on it (and zero
+  on the grounded version), and the readiness-gate assertion described above.
 - **live provider APIs (NHTSA)** — `aad doctor` plus 8 tests that hit the real vPIC and
   recalls services. Kept in its own job on purpose: an NHTSA outage should read as an
   upstream problem, not as a failure of the diff under review. It also runs weekly on a
@@ -367,7 +479,9 @@ LlamaParse, local and Pinecone) · asset-scoped retrieval with grounding enforce
 VIN decode and check-digit validation · DTC structural decode and definition lookup ·
 torque and labor extraction with citations · wiring lookup · TSB/recall search · parts
 and OBD2 provider adapters · estimate assembly · Claude Opus 5 agent with 10 tools ·
-FastAPI surface · SQLite offline cache.
+FastAPI surface · SQLite offline cache · zero-tolerance grounding monitor (claim
+extraction, LSC scoring, judge model with tighten-only override, SQLite audit log,
+review queue, HTML dashboard) wired into every agent answer.
 
 **Not built.** The React Native client (weeks 7–10), shop-management integrations
 (Tekmetric/AutoLeap), on-device cache sync, and the beta/production deployment steps

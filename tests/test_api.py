@@ -95,3 +95,85 @@ def test_estimate_endpoint(client: TestClient):
     body = response.json()
     assert body["labor_subtotal"] == 87.5
     assert body["parts_subtotal"] == 135.0
+
+
+# --- grounding monitor ----------------------------------------------------
+
+MONITOR_SOURCE = "Tighten the camshaft position sensor bolt to 9 N·m (80 in-lb)."
+
+
+def test_verify_endpoint_passes_a_grounded_output(client: TestClient):
+    response = client.post(
+        "/api/v1/monitor/verify",
+        json={
+            "question": "cam sensor bolt torque",
+            "output": "Tighten the camshaft position sensor bolt to 9 N·m.",
+            "sources": {"manual#c1": MONITOR_SOURCE},
+            "task_type": "torque_spec",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["verdict"] == "grounded"
+    assert body["event_id"]
+
+
+def test_verify_endpoint_blocks_a_fabricated_value(client: TestClient):
+    response = client.post(
+        "/api/v1/monitor/verify",
+        json={
+            "output": "Tighten the camshaft position sensor bolt to 12 N·m.",
+            "sources": {"manual#c1": MONITOR_SOURCE},
+            "task_type": "torque_spec",
+        },
+    )
+    body = response.json()
+    assert body["verdict"] == "blocked"
+    assert body["fabrication_count"] == 1
+
+    queue = client.get("/api/v1/monitor/review-queue").json()["queue"]
+    assert any(event["id"] == body["event_id"] for event in queue)
+
+
+def test_review_closes_the_queue_entry(client: TestClient):
+    event_id = client.post(
+        "/api/v1/monitor/verify",
+        json={"output": "Torque to 12 N·m.", "sources": {"manual#c1": MONITOR_SOURCE}},
+    ).json()["event_id"]
+
+    response = client.post(
+        f"/api/v1/monitor/events/{event_id}/review",
+        json={"reviewer": "tech-7", "outcome": "rejected", "note": "not in the manual"},
+    )
+    assert response.status_code == 200
+    assert client.get("/api/v1/monitor/review-queue").json()["queue"] == []
+
+    event = client.get(f"/api/v1/monitor/events/{event_id}").json()
+    assert event["review_outcome"] == "rejected"
+
+
+def test_review_of_an_unknown_event_is_404(client: TestClient):
+    response = client.post(
+        "/api/v1/monitor/events/nope/review",
+        json={"reviewer": "t", "outcome": "confirmed"},
+    )
+    assert response.status_code == 404
+
+
+def test_monitor_summary_and_dashboard_endpoints(client: TestClient):
+    client.post(
+        "/api/v1/monitor/verify",
+        json={
+            "output": "Tighten to 9 N·m.",
+            "sources": {"manual#c1": MONITOR_SOURCE},
+            "task_type": "torque_spec",
+        },
+    )
+    summary = client.get("/api/v1/monitor/summary").json()
+    assert summary["summary"]["events"] == 1
+    assert summary["by_task_type"][0]["task_type"] == "torque_spec"
+
+    page = client.get("/monitor")
+    assert page.status_code == 200
+    assert "Grounding monitor" in page.text
+    assert client.get("/api/v1/monitor/dashboard.json").json()["summary"]["events"] == 1

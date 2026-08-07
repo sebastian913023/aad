@@ -20,6 +20,7 @@ def settings(tmp_path: Path) -> Settings:
         data_dir=tmp_path,
         index_dir=tmp_path / "index",
         cache_db=tmp_path / "cache.sqlite3",
+        monitor_db=tmp_path / "monitor.sqlite3",
         embedding_backend="local",
         vector_backend="local",
         parser_backend="local",

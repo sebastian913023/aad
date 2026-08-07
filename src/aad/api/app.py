@@ -11,12 +11,14 @@ gap, never a filled-in guess.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from functools import lru_cache
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from aad.api.schemas import (
     DiagnoseRequest,
@@ -24,10 +26,12 @@ from aad.api.schemas import (
     EstimateRequest,
     LaborRequest,
     PartsRequest,
+    ReviewRequest,
     ScanRequest,
     SearchRequest,
     TorqueRequest,
     TsbRequest,
+    VerifyRequest,
     VinRequest,
     WiringRequest,
 )
@@ -214,5 +218,102 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ).to_dict()
 
         return guard(run)
+
+    # --- grounding monitor -------------------------------------------------
+    @app.post("/api/v1/monitor/verify")
+    def monitor_verify(body: VerifyRequest) -> dict:
+        from aad.monitor.pipeline import monitor_output
+        from aad.monitor.store import get_monitor_store
+
+        def run() -> dict:
+            result = monitor_output(
+                question=body.question,
+                output=body.output,
+                sources=body.sources,
+                cited_ids=body.cited_ids,
+                task_type=body.task_type,
+                use_judge=body.use_judge,
+                settings=settings,
+            )
+            payload = result.to_dict()
+            if body.record:
+                payload["event_id"] = get_monitor_store(settings.monitor_db).record(
+                    result, question=body.question, output=body.output
+                )
+            return payload
+
+        return guard(run)
+
+    @app.get("/api/v1/monitor/summary")
+    def monitor_summary(since_hours: float | None = None) -> dict:
+        from aad.monitor.store import get_monitor_store
+
+        store = get_monitor_store(settings.monitor_db)
+        since = time.time() - since_hours * 3600 if since_hours else None
+        return {
+            "summary": store.summary(since=since),
+            "by_task_type": store.by_task_type(since=since),
+            "abstention_reasons": store.abstention_reasons(since=since),
+        }
+
+    @app.get("/api/v1/monitor/events")
+    def monitor_events(
+        limit: int = 50,
+        task_type: str | None = None,
+        verdict: str | None = None,
+        needs_review: bool | None = None,
+    ) -> dict:
+        from aad.monitor.store import get_monitor_store
+
+        return {
+            "events": get_monitor_store(settings.monitor_db).recent(
+                limit=min(limit, 500),
+                task_type=task_type,
+                verdict=verdict,
+                needs_review=needs_review,
+            )
+        }
+
+    @app.get("/api/v1/monitor/events/{event_id}")
+    def monitor_event(event_id: str) -> dict:
+        from aad.monitor.store import get_monitor_store
+
+        event = get_monitor_store(settings.monitor_db).get(event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail=f"no monitor event {event_id!r}")
+        return event
+
+    @app.get("/api/v1/monitor/review-queue")
+    def monitor_review_queue(limit: int = 50) -> dict:
+        from aad.monitor.store import get_monitor_store
+
+        return {"queue": get_monitor_store(settings.monitor_db).review_queue(limit=min(limit, 500))}
+
+    @app.post("/api/v1/monitor/events/{event_id}/review")
+    def monitor_review(event_id: str, body: ReviewRequest) -> dict:
+        from aad.monitor.store import get_monitor_store
+
+        ok = get_monitor_store(settings.monitor_db).resolve(
+            event_id, reviewer=body.reviewer, outcome=body.outcome, note=body.note
+        )
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"no monitor event {event_id!r}")
+        return {"event_id": event_id, "outcome": body.outcome, "reviewer": body.reviewer}
+
+    @app.get("/api/v1/monitor/dashboard.json")
+    def monitor_dashboard_json(since_hours: float | None = None) -> dict:
+        from aad.monitor.dashboard import dashboard_data
+        from aad.monitor.store import get_monitor_store
+
+        since = time.time() - since_hours * 3600 if since_hours else None
+        return dashboard_data(get_monitor_store(settings.monitor_db), since=since)
+
+    @app.get("/monitor", response_class=HTMLResponse)
+    def monitor_dashboard(since_hours: float | None = None) -> HTMLResponse:
+        from aad.monitor.dashboard import render_from_store
+        from aad.monitor.store import get_monitor_store
+
+        since = time.time() - since_hours * 3600 if since_hours else None
+        return HTMLResponse(render_from_store(get_monitor_store(settings.monitor_db), since=since))
 
     return app

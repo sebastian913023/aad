@@ -164,3 +164,72 @@ def test_decode_vin_tool_updates_session_vehicle(indexed_retriever, settings, mo
     assert ctx.vehicle.make == "INFINITI"
     # A later tool call inherits the decoded vehicle without restating it.
     assert ctx.resolve(None).model == "G35"
+
+
+def test_agent_withholds_an_answer_the_monitor_blocks(indexed_retriever, settings, g35):
+    """A torque value the retrieved documents do not contain must not reach a technician."""
+    client = ScriptedClient(
+        [
+            FakeResponse(
+                content=[
+                    FakeBlock(
+                        type="tool_use",
+                        name="lookup_torque_spec",
+                        id="toolu_1",
+                        input={"component": "camshaft position sensor retaining bolt"},
+                    )
+                ],
+                stop_reason="tool_use",
+            ),
+            FakeResponse(
+                content=[FakeBlock(type="text", text="Torque the CMP sensor bolt to 47 Nm.")]
+            ),
+        ]
+    )
+    result = DiagnosticAgent(client=client, retriever=indexed_retriever, settings=settings).run(
+        "What is the CMP sensor bolt torque?", vehicle=g35
+    )
+
+    assert "Answer withheld" in result.answer
+    assert "47" in result.answer  # the withheld value is named, not hidden
+    assert result.unverified_answer == "Torque the CMP sensor bolt to 47 Nm."
+    assert result.monitor["verdict"] == "blocked"
+    assert result.monitor["task_type"] == "torque_spec"
+    assert result.monitor_event_id
+
+
+def test_agent_records_a_grounded_answer_without_altering_it(indexed_retriever, settings, g35):
+    client = ScriptedClient(
+        [
+            FakeResponse(
+                content=[
+                    FakeBlock(
+                        type="tool_use",
+                        name="lookup_torque_spec",
+                        id="toolu_1",
+                        input={"component": "camshaft position sensor retaining bolt"},
+                    )
+                ],
+                stop_reason="tool_use",
+            ),
+            FakeResponse(content=[FakeBlock(type="text", text="Torque it to 9 Nm.")]),
+        ]
+    )
+    result = DiagnosticAgent(client=client, retriever=indexed_retriever, settings=settings).run(
+        "What is the CMP sensor bolt torque?", vehicle=g35
+    )
+    assert result.answer == "Torque it to 9 Nm."
+    assert result.monitor["verdict"] == "grounded"
+    assert result.unverified_answer is None
+
+
+def test_monitoring_can_be_switched_off(indexed_retriever, settings, g35):
+    off = settings.model_copy(update={"monitor_enabled": False})
+    client = ScriptedClient(
+        [FakeResponse(content=[FakeBlock(type="text", text="Torque it to 47 Nm.")])]
+    )
+    result = DiagnosticAgent(client=client, retriever=indexed_retriever, settings=off).run(
+        "torque?", vehicle=g35
+    )
+    assert result.answer == "Torque it to 47 Nm."
+    assert result.monitor is None
