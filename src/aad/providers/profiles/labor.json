@@ -1,0 +1,29 @@
+{
+  "name": "labor",
+  "vendor": "Mitchell 1 ProDemand (labor times)",
+  "description": "Published labor times for repair operations.",
+  "docs_url": "https://mitchell1.com",
+  "verified": false,
+  "base_url_env": "AAD_LABOR_API_BASE",
+  "credential_env": "AAD_LABOR_API_KEY",
+  "auth": { "type": "bearer" },
+  "method": "GET",
+  "path": "/labor-times",
+  "params": {
+    "year": "year",
+    "make": "make",
+    "model": "model",
+    "engine": "engine",
+    "vin": "vin",
+    "operation": "operation"
+  },
+  "results_path": "operations",
+  "field_map": {
+    "operation": "operation",
+    "hours": "hours",
+    "skill_level": "skill_level",
+    "warranty_hours": "warranty_hours",
+    "notes": "notes"
+  },
+  "timeout": 30.0
+}

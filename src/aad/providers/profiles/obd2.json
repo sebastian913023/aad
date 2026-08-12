@@ -1,0 +1,26 @@
+{
+  "name": "obd2",
+  "vendor": "OBD2 scan service",
+  "description": "Stored trouble codes, readiness monitors and live data from a scan.",
+  "docs_url": null,
+  "verified": false,
+  "base_url_env": "AAD_OBD2_API_BASE",
+  "credential_env": "AAD_OBD2_API_KEY",
+  "auth": { "type": "bearer" },
+  "method": "GET",
+  "path": "/scans/latest",
+  "params": {
+    "vin": "vin",
+    "year": "year",
+    "make": "make",
+    "model": "model",
+    "scan_id": "scan_id"
+  },
+  "results_path": "codes",
+  "field_map": {
+    "code": "code",
+    "status": "status",
+    "freeze_frame": "freeze_frame"
+  },
+  "timeout": 30.0
+}
