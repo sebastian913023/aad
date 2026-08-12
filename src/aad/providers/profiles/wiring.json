@@ -1,0 +1,30 @@
+{
+  "name": "wiring",
+  "vendor": "ALLDATA (wiring diagrams)",
+  "description": "Interactive wiring diagrams, connector pinouts and wire colours.",
+  "docs_url": "https://www.alldata.com",
+  "verified": false,
+  "base_url_env": "AAD_WIRING_API_BASE",
+  "credential_env": "AAD_WIRING_API_KEY",
+  "auth": { "type": "bearer" },
+  "method": "GET",
+  "path": "/wiring-diagrams",
+  "params": {
+    "year": "year",
+    "make": "make",
+    "model": "model",
+    "engine": "engine",
+    "vin": "vin",
+    "circuit": "circuit"
+  },
+  "results_path": "diagrams",
+  "field_map": {
+    "title": "title",
+    "circuit": "circuit",
+    "image_url": "image_url",
+    "connector": "connector",
+    "pinout": "pinout",
+    "notes": "notes"
+  },
+  "timeout": 30.0
+}

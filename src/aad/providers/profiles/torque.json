@@ -1,0 +1,33 @@
+{
+  "name": "torque",
+  "vendor": "Mitchell 1 ProDemand (torque specifications)",
+  "description": "Published torque values, bolt sizes and tightening sequences.",
+  "docs_url": "https://mitchell1.com",
+  "verified": false,
+  "base_url_env": "AAD_TORQUE_API_BASE",
+  "credential_env": "AAD_TORQUE_API_KEY",
+  "auth": { "type": "bearer" },
+  "method": "GET",
+  "path": "/torque-specs",
+  "params": {
+    "year": "year",
+    "make": "make",
+    "model": "model",
+    "engine": "engine",
+    "vin": "vin",
+    "component": "component"
+  },
+  "results_path": "specs",
+  "field_map": {
+    "component": "component",
+    "value": "value",
+    "unit": "unit",
+    "bolt_size": "bolt_size",
+    "thread_pitch": "thread_pitch",
+    "quantity": "quantity",
+    "sequence": "sequence",
+    "stage": "stage",
+    "notes": "notes"
+  },
+  "timeout": 30.0
+}

@@ -1,0 +1,32 @@
+{
+  "name": "parts",
+  "vendor": "Parts supplier catalog (NAPA / WorldPac / equivalent)",
+  "description": "Part numbers, availability and shop pricing.",
+  "docs_url": "https://www.napaonline.com",
+  "verified": false,
+  "base_url_env": "AAD_PARTS_API_BASE",
+  "credential_env": "AAD_PARTS_API_KEY",
+  "auth": { "type": "bearer" },
+  "method": "GET",
+  "path": "/parts/search",
+  "params": {
+    "q": "query",
+    "year": "year",
+    "make": "make",
+    "model": "model",
+    "engine": "engine",
+    "vin": "vin",
+    "limit": "limit"
+  },
+  "results_path": "parts",
+  "field_map": {
+    "part_number": "part_number",
+    "description": "description",
+    "brand": "brand",
+    "price": "price",
+    "core_charge": "core_charge",
+    "availability": "availability",
+    "supplier": "supplier"
+  },
+  "timeout": 30.0
+}
