@@ -1,0 +1,9 @@
+# Runtime dependencies for the Vercel Python serverless function in api/index.py.
+# Mirrors [project.dependencies] in pyproject.toml, minus uvicorn (Vercel provides
+# its own ASGI entrypoint handling; a local dev server isn't needed at runtime).
+anthropic>=0.69
+fastapi>=0.115
+pydantic>=2.9
+pydantic-settings>=2.6
+httpx>=0.27
+numpy>=1.26
