@@ -443,6 +443,37 @@ sidecar is the better path for a mixed directory:
 {"year": 2004, "make": "INFINITI", "model": "G35", "engine": "3.5L V6 VQ35DE"}
 ```
 
+## Deploying to Vercel
+
+`api/index.py` re-exports the module-level `app` from `aad.api` (adding `src/` to
+`sys.path`, since Vercel's Python builder doesn't know about this project's
+`src`-layout), and `vercel.json` rewrites every request to that function. `requirements.txt`
+at the repo root mirrors `[project.dependencies]` in `pyproject.toml`, minus `uvicorn`
+(Vercel supplies its own ASGI entrypoint handling).
+
+**This is a serverless deployment of a system designed around local persistence, and
+that mismatch has real consequences — read this before relying on it:**
+
+- **The vector index ships empty.** `data/index/` is gitignored and nothing runs
+  `aad-ingest` at build time, so a fresh deploy has zero indexed chunks until you point
+  `AAD_VECTOR_BACKEND=pinecone` at a real index, or add an ingestion step to the build.
+- **The offline cache and the grounding-monitor audit log do not persist.** Vercel's
+  function filesystem is read-only outside `/tmp`, and `/tmp` itself is wiped between
+  cold starts and never shared across instances. Point `AAD_CACHE_DB` and
+  `AAD_MONITOR_DB` at `/tmp/*.sqlite3` so requests don't 500 trying to write to a
+  read-only path — but understand that every cold start starts both stores from empty.
+  The monitor's whole design intent is an audit trail ("every answer a technician acted
+  on has a row"); on Vercel that trail only covers one warm instance's lifetime. For a
+  real deployment, back both with a durable store (Vercel Postgres, Turso, a hosted
+  Postgres/SQLite) instead of local files.
+- **`ANTHROPIC_API_KEY`** (or the Bedrock credentials, if `AAD_PROVIDER=bedrock`) has to
+  be set in the Vercel project's environment variables — it is never invented or
+  committed here.
+
+None of this blocks a successful build or a working `/healthz` and `/monitor` dashboard;
+it blocks a fresh deploy's `/api/v1/*` data endpoints from returning anything until the
+index and secrets above are in place.
+
 ## Tests and CI
 
 164 hermetic tests, no network and no API key required. The agent loop is tested against a
