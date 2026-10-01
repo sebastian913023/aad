@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aad.config import Settings, get_settings
+from aad.errors import NotConfiguredError
 
 
 @dataclass(slots=True)
@@ -54,10 +55,17 @@ def build_client(settings: Settings | None = None) -> ModelClient:
             supports_server_fallbacks=False,
         )
 
+    if not settings.anthropic_api_key:
+        # Every other provider in this system fails this way on a missing credential;
+        # the model call is not special. Without this check the Anthropic SDK raises
+        # a bare TypeError deep inside request-building, which reaches a caller as an
+        # unhandled 500 instead of the 501 "not configured" every other gap produces.
+        raise NotConfiguredError("anthropic", "set ANTHROPIC_API_KEY")
+
     from anthropic import Anthropic
 
     return ModelClient(
-        client=Anthropic(),
+        client=Anthropic(api_key=settings.anthropic_api_key),
         model=settings.model,
         supports_server_fallbacks=True,
     )
