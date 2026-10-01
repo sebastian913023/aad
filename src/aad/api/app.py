@@ -101,13 +101,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def healthz() -> dict:
         return {"status": "ok", "model": settings.model, "provider": settings.provider}
 
+    @app.get("/", response_class=HTMLResponse)
+    def app_shell() -> HTMLResponse:
+        from aad.web import render_app
+
+        return HTMLResponse(render_app())
+
     @app.get("/api/v1/index/stats")
     def index_stats() -> dict:
         store = get_vector_store(settings)
         payload: dict[str, Any] = {"chunks": store.count(), "index_dir": str(settings.index_dir)}
         if isinstance(store, LocalVectorStore):
             payload["sources"] = store.sources()
-        payload["cache"] = get_cache().stats()
+        payload["cache"] = get_cache(settings=settings).stats()
         return payload
 
     # --- vehicle identity ------------------------------------------------
@@ -237,7 +243,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             payload = result.to_dict()
             if body.record:
-                payload["event_id"] = get_monitor_store(settings.monitor_db).record(
+                payload["event_id"] = get_monitor_store(settings=settings).record(
                     result, question=body.question, output=body.output
                 )
             return payload
@@ -248,7 +254,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def monitor_summary(since_hours: float | None = None) -> dict:
         from aad.monitor.store import get_monitor_store
 
-        store = get_monitor_store(settings.monitor_db)
+        store = get_monitor_store(settings=settings)
         since = time.time() - since_hours * 3600 if since_hours else None
         return {
             "summary": store.summary(since=since),
@@ -266,7 +272,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from aad.monitor.store import get_monitor_store
 
         return {
-            "events": get_monitor_store(settings.monitor_db).recent(
+            "events": get_monitor_store(settings=settings).recent(
                 limit=min(limit, 500),
                 task_type=task_type,
                 verdict=verdict,
@@ -278,7 +284,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def monitor_event(event_id: str) -> dict:
         from aad.monitor.store import get_monitor_store
 
-        event = get_monitor_store(settings.monitor_db).get(event_id)
+        event = get_monitor_store(settings=settings).get(event_id)
         if event is None:
             raise HTTPException(status_code=404, detail=f"no monitor event {event_id!r}")
         return event
@@ -287,13 +293,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def monitor_review_queue(limit: int = 50) -> dict:
         from aad.monitor.store import get_monitor_store
 
-        return {"queue": get_monitor_store(settings.monitor_db).review_queue(limit=min(limit, 500))}
+        return {"queue": get_monitor_store(settings=settings).review_queue(limit=min(limit, 500))}
 
     @app.post("/api/v1/monitor/events/{event_id}/review")
     def monitor_review(event_id: str, body: ReviewRequest) -> dict:
         from aad.monitor.store import get_monitor_store
 
-        ok = get_monitor_store(settings.monitor_db).resolve(
+        ok = get_monitor_store(settings=settings).resolve(
             event_id, reviewer=body.reviewer, outcome=body.outcome, note=body.note
         )
         if not ok:
@@ -306,7 +312,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from aad.monitor.store import get_monitor_store
 
         since = time.time() - since_hours * 3600 if since_hours else None
-        return dashboard_data(get_monitor_store(settings.monitor_db), since=since)
+        return dashboard_data(get_monitor_store(settings=settings), since=since)
 
     @app.get("/monitor", response_class=HTMLResponse)
     def monitor_dashboard(since_hours: float | None = None) -> HTMLResponse:
@@ -314,6 +320,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from aad.monitor.store import get_monitor_store
 
         since = time.time() - since_hours * 3600 if since_hours else None
-        return HTMLResponse(render_from_store(get_monitor_store(settings.monitor_db), since=since))
+        return HTMLResponse(render_from_store(get_monitor_store(settings=settings), since=since))
 
     return app

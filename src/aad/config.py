@@ -11,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +34,12 @@ class Settings(BaseSettings):
     max_tokens: int = 16000
     provider: Literal["anthropic", "bedrock"] = "anthropic"
     aws_region: str = "us-east-1"
+    # Unprefixed: this is the exact variable name the Anthropic SDK itself reads, and
+    # the one every deployment host's "connect your API key" flow sets. Tracking it in
+    # Settings (rather than leaving it to the SDK's own env lookup) is what lets
+    # build_client() raise a clean NotConfiguredError instead of the model call
+    # failing deep inside the SDK with an unhandled TypeError.
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
     # --- Embeddings ------------------------------------------------------
     # "local" is a deterministic offline embedder: no network, no API key, usable
@@ -106,6 +113,17 @@ class Settings(BaseSettings):
     # Opt-in so the default test run needs no network. CI sets it to exercise
     # NHTSA against the real service.
     live_tests: bool = False
+
+    # --- Durable storage for the offline cache and monitor audit log -----
+    # "sqlite" is the offline-first default: a single file, no server, correct for
+    # a workshop with no connectivity. On a serverless host (Vercel, etc.) whose
+    # filesystem is read-only outside /tmp, that file does not survive a cold
+    # start — "postgres" backs both stores with a real database instead.
+    storage_backend: Literal["sqlite", "postgres"] = "sqlite"
+    # Deliberately unprefixed: this is the standard variable name every Postgres
+    # host (Neon, Vercel Postgres, Supabase, RDS) sets automatically, and reusing
+    # it means no extra configuration step beyond attaching the database.
+    database_url: str | None = Field(default=None, alias="DATABASE_URL")
 
 
     def provider_env(self) -> dict[str, str]:

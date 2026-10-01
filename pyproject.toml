@@ -11,6 +11,13 @@ dependencies = [
     "pydantic-settings>=2.6",
     "httpx>=0.27",
     "numpy>=1.26",
+    # The Pinecone and OpenAI-embedding backends avoid a new dependency by calling
+    # their plain REST APIs over httpx. Postgres has no such shortcut — it needs a
+    # real wire-protocol driver — so it's a core dependency rather than an optional
+    # extra: AAD_STORAGE_BACKEND=postgres has to work whichever way this package
+    # was installed on the host actually running it (notably Vercel's build, which
+    # installs [project.dependencies] directly rather than any extras group).
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
