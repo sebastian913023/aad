@@ -191,11 +191,21 @@ async function decodeVin() {
   }
 }
 
+// When the server has AAD_API_TOKEN set, /api/v1/* needs it. Stored in this browser only.
+function authHeaders(hasBody) {
+  const h = {};
+  if (hasBody) h["content-type"] = "application/json";
+  let token = null;
+  try { token = localStorage.getItem("aad.token"); } catch (e) {}
+  if (token) h["authorization"] = "Bearer " + token;
+  return h;
+}
+
 async function api(path, body, method="POST") {
   try {
     const res = await fetch(path, {
       method,
-      headers: body !== undefined ? { "content-type": "application/json" } : undefined,
+      headers: authHeaders(body !== undefined),
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     let data;
@@ -407,6 +417,12 @@ async function buildEstimate() {
 async function loadFooterStats() {
   const res = await api("/api/v1/index/stats", undefined, "GET");
   const el = $("#footer-stats");
+  if (res.status === 401) {
+    const t = window.prompt("This server requires an API token:");
+    if (t) { try { localStorage.setItem("aad.token", t.trim()); } catch (e) {} location.reload(); }
+    el.textContent = "API token required";
+    return;
+  }
   if (!res.ok) { el.textContent = "index status unavailable"; return; }
   const n = res.data.chunks ?? 0;
   el.textContent = n === 0

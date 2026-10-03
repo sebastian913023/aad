@@ -11,14 +11,15 @@ gap, never a filled-in guess.
 
 from __future__ import annotations
 
+import hmac
 import time
 from collections.abc import Callable
 from functools import lru_cache
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from aad.api.schemas import (
     DiagnoseRequest,
@@ -90,9 +91,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "unavailable data is reported as unavailable."
         ),
     )
+    if settings.api_token:
+        expected = settings.api_token
+
+        @app.middleware("http")
+        async def require_token(request: Request, call_next):
+            # CORS preflights carry no credentials by design; the CORS layer answers them.
+            if request.url.path.startswith("/api/v1/") and request.method != "OPTIONS":
+                header = request.headers.get("authorization", "")
+                supplied = (
+                    header[7:] if header.lower().startswith("bearer ")
+                    else request.headers.get("x-api-key", "")
+                )
+                if not hmac.compare_digest(supplied.encode(), expected.encode()):
+                    return JSONResponse({"detail": "invalid or missing API token"}, status_code=401)
+            return await call_next(request)
+
+    # Added after the auth middleware so CORS is the outermost layer: even a 401 then
+    # carries CORS headers and a browser caller sees the real status, not an opaque failure.
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()] or ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )

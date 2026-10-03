@@ -7,6 +7,7 @@ of this system is that a wrong torque spec is worse than no torque spec.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -16,6 +17,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# On Vercel (and similar serverless hosts) the deployed filesystem is read-only and only
+# /tmp is writable, so anything that creates files at runtime has to live there. Elsewhere
+# the repo's own data/ directory is used, exactly as before.
+_WRITABLE_ROOT = Path("/tmp/aad") if os.environ.get("VERCEL") else REPO_ROOT / "data"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -24,8 +30,17 @@ class Settings(BaseSettings):
 
     # --- Storage ---------------------------------------------------------
     data_dir: Path = REPO_ROOT / "data"
-    index_dir: Path = REPO_ROOT / "data" / "index"
-    cache_db: Path = REPO_ROOT / "data" / "offline_cache.sqlite3"
+    index_dir: Path = _WRITABLE_ROOT / "index"
+    cache_db: Path = _WRITABLE_ROOT / "offline_cache.sqlite3"
+
+    # --- API access control ------------------------------------------------
+    # When api_token is set, every /api/v1/* request must carry it as either
+    # `Authorization: Bearer <token>` or `X-API-Key: <token>`. Unset keeps the API open
+    # (local dev, tests). Set it on any deployment reachable from the internet: without
+    # it, anyone who finds the URL can spend the model key via /diagnose.
+    api_token: str | None = None
+    # Comma-separated allowed browser origins, or "*" for any.
+    cors_origins: str = "*"
 
     # --- Model -----------------------------------------------------------
     # Bedrock model ids carry an "anthropic." prefix; the client layer adds it.
@@ -96,7 +111,7 @@ class Settings(BaseSettings):
     production_mode: bool = False
 
     # --- Hallucination monitoring -----------------------------------------
-    monitor_db: Path = REPO_ROOT / "data" / "monitor.sqlite3"
+    monitor_db: Path = _WRITABLE_ROOT / "monitor.sqlite3"
     # Below this mean semantic consistency an output is routed to human review even
     # when every literal value checks out — agreement on numbers is not agreement on
     # meaning.
