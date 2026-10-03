@@ -7,13 +7,20 @@ of this system is that a wrong torque spec is worse than no torque spec.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# On Vercel (and similar serverless hosts) the deployed filesystem is read-only and only
+# /tmp is writable, so anything that creates files at runtime has to live there. Elsewhere
+# the repo's own data/ directory is used, exactly as before.
+_WRITABLE_ROOT = Path("/tmp/aad") if os.environ.get("VERCEL") else REPO_ROOT / "data"
 
 
 class Settings(BaseSettings):
@@ -23,8 +30,17 @@ class Settings(BaseSettings):
 
     # --- Storage ---------------------------------------------------------
     data_dir: Path = REPO_ROOT / "data"
-    index_dir: Path = REPO_ROOT / "data" / "index"
-    cache_db: Path = REPO_ROOT / "data" / "offline_cache.sqlite3"
+    index_dir: Path = _WRITABLE_ROOT / "index"
+    cache_db: Path = _WRITABLE_ROOT / "offline_cache.sqlite3"
+
+    # --- API access control ------------------------------------------------
+    # When api_token is set, every /api/v1/* request must carry it as either
+    # `Authorization: Bearer <token>` or `X-API-Key: <token>`. Unset keeps the API open
+    # (local dev, tests). Set it on any deployment reachable from the internet: without
+    # it, anyone who finds the URL can spend the model key via /diagnose.
+    api_token: str | None = None
+    # Comma-separated allowed browser origins, or "*" for any.
+    cors_origins: str = "*"
 
     # --- Model -----------------------------------------------------------
     # Bedrock model ids carry an "anthropic." prefix; the client layer adds it.
@@ -33,6 +49,12 @@ class Settings(BaseSettings):
     max_tokens: int = 16000
     provider: Literal["anthropic", "bedrock"] = "anthropic"
     aws_region: str = "us-east-1"
+    # Unprefixed: this is the exact variable name the Anthropic SDK itself reads, and
+    # the one every deployment host's "connect your API key" flow sets. Tracking it in
+    # Settings (rather than leaving it to the SDK's own env lookup) is what lets
+    # build_client() raise a clean NotConfiguredError instead of the model call
+    # failing deep inside the SDK with an unhandled TypeError.
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
     # --- Embeddings ------------------------------------------------------
     # "local" is a deterministic offline embedder: no network, no API key, usable
@@ -89,7 +111,7 @@ class Settings(BaseSettings):
     production_mode: bool = False
 
     # --- Hallucination monitoring -----------------------------------------
-    monitor_db: Path = REPO_ROOT / "data" / "monitor.sqlite3"
+    monitor_db: Path = _WRITABLE_ROOT / "monitor.sqlite3"
     # Below this mean semantic consistency an output is routed to human review even
     # when every literal value checks out — agreement on numbers is not agreement on
     # meaning.
@@ -106,6 +128,17 @@ class Settings(BaseSettings):
     # Opt-in so the default test run needs no network. CI sets it to exercise
     # NHTSA against the real service.
     live_tests: bool = False
+
+    # --- Durable storage for the offline cache and monitor audit log -----
+    # "sqlite" is the offline-first default: a single file, no server, correct for
+    # a workshop with no connectivity. On a serverless host (Vercel, etc.) whose
+    # filesystem is read-only outside /tmp, that file does not survive a cold
+    # start — "postgres" backs both stores with a real database instead.
+    storage_backend: Literal["sqlite", "postgres"] = "sqlite"
+    # Deliberately unprefixed: this is the standard variable name every Postgres
+    # host (Neon, Vercel Postgres, Supabase, RDS) sets automatically, and reusing
+    # it means no extra configuration step beyond attaching the database.
+    database_url: str | None = Field(default=None, alias="DATABASE_URL")
 
 
     def provider_env(self) -> dict[str, str]:
