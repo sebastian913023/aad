@@ -14,6 +14,8 @@ commercial product's interface.
 
 from __future__ import annotations
 
+from aad.web_quote import QUOTE_CSS, QUOTE_JS, QUOTE_PANEL, QUOTE_TAB_BUTTON
+
 _CSS = """
 :root {
   --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#252a34; --text:#e6e9ef;
@@ -575,7 +577,7 @@ def render_app() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>aad — auto mechanic diagnostic assistant</title>
 <link rel="icon" href="data:,">
-<style>{_CSS}</style></head>
+<style>{_CSS}{QUOTE_CSS}</style></head>
 <body>
 <header class="top">
   <h1>aad</h1>
@@ -603,6 +605,7 @@ def render_app() -> str:
   <button data-tab="parts">Parts</button>
   <button data-tab="scan">OBD2 Scan</button>
   <button data-tab="estimate">Estimate</button>
+  {QUOTE_TAB_BUTTON}
 </nav>
 
 <main>
@@ -653,6 +656,8 @@ def render_app() -> str:
       <div id="estimate-result"></div>
     </div>
   </div>
+
+  {QUOTE_PANEL}
 </main>
 
 <footer class="app-footer">
@@ -662,4 +667,5 @@ def render_app() -> str:
 </footer>
 
 <script>{_JS}</script>
+<script>{QUOTE_JS}</script>
 </body></html>"""
