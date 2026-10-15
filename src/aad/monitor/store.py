@@ -60,12 +60,29 @@ class MonitorStore:
     """Append-only log of monitor results, plus the aggregates the dashboard reads."""
 
     def __init__(self, path: Path) -> None:
-        self.path = Path(path)
+        self.path: Path | None = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
         self._conn.commit()
+
+    @classmethod
+    def connect_postgres(cls, database_url: str | None) -> MonitorStore:
+        """Same store, same queries, backed by Postgres — see `aad.storage`.
+
+        Every query below is written once, against `?` placeholders and dict-like
+        row access; `aad.storage.PgConnection` is what makes the identical SQL and
+        the identical Python work against either backend.
+        """
+        from aad.storage import connect_postgres
+
+        self = cls.__new__(cls)
+        self.path = None
+        self._conn = connect_postgres(database_url, who="monitor_store")
+        self._conn.executescript(SCHEMA)
+        self._conn.commit()
+        return self
 
     # --- writing ---------------------------------------------------------
     def record(
@@ -408,17 +425,33 @@ def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
     return event
 
 
-# Keyed by path, not a single global: a test settings object pointing at a tmp file
-# must never end up writing into the shop's real audit log.
-_stores: dict[Path, MonitorStore] = {}
+# Keyed by path (or, for Postgres, by database URL) rather than a single global: a
+# test settings object pointing at a tmp file must never end up writing into the
+# shop's real audit log.
+_stores: dict[Any, MonitorStore] = {}
 
 
-def get_monitor_store(path: Path | None = None) -> MonitorStore:
-    if path is None:
+def get_monitor_store(path: Path | None = None, *, settings: Any = None) -> MonitorStore:
+    """The process-wide monitor store.
+
+    Backend is decided by `settings.storage_backend` ("sqlite" default, "postgres"
+    for a durable deployment). Passing an explicit `path` always means SQLite at that
+    path regardless of backend — this is how tests stay isolated no matter what
+    `AAD_STORAGE_BACKEND` is set to in the environment they happen to run in.
+    """
+    if settings is None:
         from aad.config import get_settings
 
-        path = get_settings().monitor_db
-    resolved = Path(path).expanduser().resolve()
+        settings = get_settings()
+
+    if path is None and settings.storage_backend == "postgres":
+        key = ("postgres", settings.database_url)
+        store = _stores.get(key)
+        if store is None:
+            store = _stores[key] = MonitorStore.connect_postgres(settings.database_url)
+        return store
+
+    resolved = Path(path if path is not None else settings.monitor_db).expanduser().resolve()
     store = _stores.get(resolved)
     if store is None:
         store = _stores[resolved] = MonitorStore(resolved)

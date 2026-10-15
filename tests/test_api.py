@@ -177,3 +177,25 @@ def test_monitor_summary_and_dashboard_endpoints(client: TestClient):
     assert page.status_code == 200
     assert "Grounding monitor" in page.text
     assert client.get("/api/v1/monitor/dashboard.json").json()["summary"]["events"] == 1
+
+
+# --- app shell ---------------------------------------------------------------
+
+def test_app_shell_renders(client: TestClient):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "<title>aad" in response.text
+    for tab in ("diagnose", "torque", "labor", "wiring", "dtc", "parts", "estimate"):
+        assert f'data-tab="{tab}"' in response.text
+
+
+def test_diagnose_without_an_api_key_is_a_clean_not_configured_error(client: TestClient):
+    """Regression: a missing ANTHROPIC_API_KEY used to escape as an unhandled 500
+    from deep inside the Anthropic SDK. It must read the same as every other
+    unconfigured provider."""
+    response = client.post(
+        "/api/v1/diagnose", json={"question": "torque?", "vehicle": G35}
+    )
+    assert response.status_code == 501
+    assert "ANTHROPIC_API_KEY" in response.json()["detail"]

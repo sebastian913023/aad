@@ -358,9 +358,11 @@ request ──► DiagnosticAgent (Claude Opus 5)
 | `aad/providers/` | VIN, DTC, OBD2, torque, labor, parts, TSB, wiring |
 | `aad/agent/` | tool schemas + dispatch, model client, the tool loop |
 | `aad/api/` | FastAPI surface, one endpoint per tool plus `/diagnose` |
-| `aad/cache/` | SQLite offline cache with stale-fallback |
+| `aad/cache/` | offline cache (SQLite or Postgres) with stale-fallback |
 | `aad/estimates.py` | estimate arithmetic |
-| `aad/monitor/` | zero-tolerance grounding monitor: claim extraction, LSC scoring, judge, pipeline, SQLite event store, dashboard |
+| `aad/monitor/` | zero-tolerance grounding monitor: claim extraction, LSC scoring, judge, pipeline, event store (SQLite or Postgres), dashboard |
+| `aad/storage.py` | shared SQLite/Postgres connection layer behind both stores above |
+| `aad/web.py` | the technician web UI (`GET /`) |
 
 ### Model configuration
 
@@ -393,10 +395,26 @@ The local embedder is a hashed bag-of-ngrams projection. It is genuinely weaker 
 learned model at paraphrase matching — it is here so the whole system runs with no
 account and no network, which the offline-first requirement demands anyway.
 
+## Web UI
+
+`GET /` serves a technician-facing single-page app (`aad/web.py`) — one self-contained
+HTML file, no build step, no framework, no CDN, in the same style as the `/monitor`
+dashboard. It's a client of the JSON API below, nothing more: vehicle context (VIN
+decode or manual year/make/model/engine) scopes every lookup, tabs cover Diagnose
+(chat, with the grounding-monitor verdict shown inline on every answer), Torque,
+Labor, Wiring, DTC, TSB/Recalls, Parts, OBD2 Scan, and an Estimate builder.
+
+It renders exactly what the API returns — a result's own `citation` becomes a small
+pill, its own `unavailable_reason`/`instruction` becomes a highlighted gap notice, and
+nothing is inferred or filled in on the client that the backend didn't send. This is
+an original design; no part of it is modeled on, or intended to resemble, any specific
+commercial product's interface.
+
 ## API
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /` | The technician web UI (see above) |
 | `POST /api/v1/diagnose` | Full agent loop; returns answer, citations, and tool trace |
 | `POST /api/v1/vin/decode` | VIN → vehicle, with check-digit validation |
 | `POST /api/v1/manuals/search` | Asset-scoped RAG over indexed documentation |
@@ -457,30 +475,65 @@ that mismatch has real consequences — read this before relying on it:**
 - **The vector index ships empty.** `data/index/` is gitignored and nothing runs
   `aad-ingest` at build time, so a fresh deploy has zero indexed chunks until you point
   `AAD_VECTOR_BACKEND=pinecone` at a real index, or add an ingestion step to the build.
-- **The offline cache and the grounding-monitor audit log do not persist.** Vercel's
-  function filesystem is read-only outside `/tmp`, and `/tmp` itself is wiped between
-  cold starts and never shared across instances. Point `AAD_CACHE_DB` and
-  `AAD_MONITOR_DB` at `/tmp/*.sqlite3` so requests don't 500 trying to write to a
-  read-only path — but understand that every cold start starts both stores from empty.
-  The monitor's whole design intent is an audit trail ("every answer a technician acted
-  on has a row"); on Vercel that trail only covers one warm instance's lifetime. For a
-  real deployment, back both with a durable store (Vercel Postgres, Turso, a hosted
-  Postgres/SQLite) instead of local files.
 - **`ANTHROPIC_API_KEY`** (or the Bedrock credentials, if `AAD_PROVIDER=bedrock`) has to
   be set in the Vercel project's environment variables — it is never invented or
   committed here.
+
+The offline cache and the grounding-monitor audit log are **solved**, not just
+flagged: set `AAD_STORAGE_BACKEND=postgres` and attach a `DATABASE_URL` (Neon, Vercel
+Postgres, Supabase, or any Postgres host — the variable name is deliberately the one
+every one of them sets automatically) and both stores run against it instead of a
+local SQLite file. See [Durable storage](#durable-storage-sqlite-vs-postgres) below.
+With `AAD_STORAGE_BACKEND` left at its `sqlite` default, the earlier caveat still
+applies verbatim: Vercel's function filesystem is read-only outside `/tmp`, `/tmp`
+itself is wiped between cold starts and never shared across instances, so
+`AAD_CACHE_DB`/`AAD_MONITOR_DB` pointed at `/tmp/*.sqlite3` avoid a write-time 500 but
+reset every cold start — the monitor's audit-trail guarantee ("every answer a
+technician acted on has a row") only holds for one warm instance's lifetime that way.
 
 None of this blocks a successful build or a working `/healthz` and `/monitor` dashboard;
 it blocks a fresh deploy's `/api/v1/*` data endpoints from returning anything until the
 index and secrets above are in place.
 
+## Durable storage: SQLite vs Postgres
+
+Two things get written to at request time: the offline cache (every successful
+commercial-provider response, so a network blip serves yesterday's answer instead of
+none) and the grounding monitor's audit log (one row per verified answer). Both are
+backed by the same pluggable storage layer (`aad/storage.py`), selected by one setting:
+
+```bash
+AAD_STORAGE_BACKEND=sqlite    # default — a local file, no server, works fully offline
+AAD_STORAGE_BACKEND=postgres  # a real database; needs DATABASE_URL
+DATABASE_URL=postgresql://...  # deliberately unprefixed — the variable every Postgres
+                                # host (Neon, Vercel Postgres, Supabase, RDS) sets itself
+```
+
+`sqlite` is correct for local development, for CI, and for any shop deployment with no
+connectivity — the entire offline-first point of this system is that it still answers
+with no network at all, and a database dependency would contradict that. `postgres` is
+for exactly one situation: a host whose filesystem does not survive between requests.
+
+Both `OfflineCache` and `MonitorStore` are written once, against SQLite's `?`
+placeholders and dict-like row access. `aad/storage.py`'s `PgConnection` translates `?`
+to `%s` and makes a Postgres row answer `row["col"]` and `dict(row)` the same way
+`sqlite3.Row` does, so the exact same SQL and the exact same Python run against either
+backend — there is no second, parallel implementation to keep in sync. Verified with a
+real local Postgres server, not just reviewed: `tests/test_storage.py`'s two `live`
+tests create the schema, write, and read back through an actual `psycopg` connection
+(`pytest -m live tests/test_storage.py` with `AAD_LIVE_TESTS=1` and a `DATABASE_URL`
+or `TEST_DATABASE_URL`); CI runs them against a disposable Postgres service container
+on every push, not just NHTSA's real third-party one.
+
 ## Tests and CI
 
-164 hermetic tests, no network and no API key required. The agent loop is tested against a
-scripted client, so tool dispatch, citation harvesting, refusal handling, and the turn
-budget are all covered without calling the API. The monitor is tested the same way — the
-load-bearing case plants a plausible, well-cited, confidently-worded torque value that is
-simply not in the source, and asserts it gets blocked.
+177 hermetic tests, no network and no API key required (plus 10 `live` tests: 8 against
+real NHTSA services, 2 against a real Postgres server — both opt-in, see below). The
+agent loop is tested against a scripted client, so tool dispatch, citation harvesting,
+refusal handling, and the turn budget are all covered without calling the API. The
+monitor is tested the same way — the load-bearing case plants a plausible, well-cited,
+confidently-worded torque value that is simply not in the source, and asserts it gets
+blocked.
 
 ```bash
 .venv/bin/aad check           # ruff + pytest, the same gates CI runs
@@ -491,7 +544,8 @@ CI (`.github/workflows/ci.yml`) runs on every push and PR, as two jobs:
 
 - **tests + lint** — ruff, pytest, an ingestion smoke test, a step that plants a
   fabricated torque value and asserts `aad monitor verify` exits non-zero on it (and zero
-  on the grounded version), and the readiness-gate assertion described above.
+  on the grounded version), a Postgres-backed storage round-trip against a disposable
+  service container, and the readiness-gate assertion described above.
 - **live provider APIs (NHTSA)** — `aad doctor` plus 8 tests that hit the real vPIC and
   recalls services. Kept in its own job on purpose: an NHTSA outage should read as an
   upstream problem, not as a failure of the diff under review. It also runs weekly on a
@@ -510,9 +564,12 @@ LlamaParse, local and Pinecone) · asset-scoped retrieval with grounding enforce
 VIN decode and check-digit validation · DTC structural decode and definition lookup ·
 torque and labor extraction with citations · wiring lookup · TSB/recall search · parts
 and OBD2 provider adapters · estimate assembly · Claude Opus 5 agent with 10 tools ·
-FastAPI surface · SQLite offline cache · zero-tolerance grounding monitor (claim
-extraction, LSC scoring, judge model with tighten-only override, SQLite audit log,
-review queue, HTML dashboard) wired into every agent answer.
+a technician web UI serving that whole surface · FastAPI backend · offline cache and
+grounding-monitor audit log backed by SQLite (offline) or Postgres (durable
+deployment) · zero-tolerance grounding monitor (claim extraction, LSC scoring, judge
+model with tighten-only override, audit log, review queue, HTML dashboard) wired into
+every agent answer · a clean "not configured" error (not a crash) on a missing
+`ANTHROPIC_API_KEY`.
 
 **Not built.** The React Native client (weeks 7–10), shop-management integrations
 (Tekmetric/AutoLeap), on-device cache sync, and the beta/production deployment steps

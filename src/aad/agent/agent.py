@@ -165,7 +165,7 @@ class DiagnosticAgent:
         result.monitor = monitored.to_dict()
 
         try:
-            result.monitor_event_id = get_monitor_store(self.settings.monitor_db).record(
+            result.monitor_event_id = get_monitor_store(settings=self.settings).record(
                 monitored,
                 question=question,
                 output=result.answer,

@@ -19,6 +19,22 @@ jobs:
   test:
     name: tests + lint
     runs-on: ubuntu-latest
+    # Backs the Postgres-backed storage tests below. Unlike the NHTSA job, this is a
+    # disposable service container, not a third-party dependency — it belongs in the
+    # hermetic job, not "live-providers".
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aad_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
 
@@ -78,6 +94,15 @@ jobs:
             --source manual#c1=/tmp/monitor-check/source.txt \
             --question "cam sensor bolt torque" --task-type torque_spec
           echo "monitor blocks fabrications and passes grounded values"
+
+      - name: Durable storage (Postgres) round-trip
+        # Proves AAD_STORAGE_BACKEND=postgres actually works, not just that its SQL
+        # parses — the offline cache and the monitor's audit log get a real schema
+        # created and a real row written and read back.
+        env:
+          AAD_LIVE_TESTS: "1"
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/aad_test
+        run: pytest -q -m live tests/test_storage.py
 
       - name: Index readiness gate
         # Must report NOT ready: the sample corpus is synthetic. If this ever
